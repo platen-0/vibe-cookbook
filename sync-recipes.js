@@ -1,6 +1,5 @@
 // Sync recipes.json from Firebase Firestore REST API
-const https = require('https');
-const fs = require('fs');
+import { writeFileSync } from 'node:fs';
 
 const PROJECT_ID = 'vibe-cookbook';
 const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/recipes`;
@@ -41,14 +40,11 @@ async function fetchAll() {
       ? `${BASE_URL}?pageSize=300&pageToken=${pageToken}`
       : `${BASE_URL}?pageSize=300`;
 
-    const data = await new Promise((resolve, reject) => {
-      https.get(url, (res) => {
-        let body = '';
-        res.on('data', chunk => body += chunk);
-        res.on('end', () => resolve(JSON.parse(body)));
-        res.on('error', reject);
-      });
-    });
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Firestore sync failed with HTTP ${response.status}`);
+    }
+    const data = await response.json();
 
     if (data.documents) {
       recipes = recipes.concat(data.documents.map(parseDocument));
@@ -64,7 +60,7 @@ fetchAll().then(recipes => {
   recipes.sort((a, b) => new Date(b.date) - new Date(a.date));
 
   const output = { recipes };
-  fs.writeFileSync('recipes.json', JSON.stringify(output, null, 2));
+  writeFileSync('recipes.json', `${JSON.stringify(output, null, 2)}\n`);
 
   const withTal = recipes.filter(r => r.tags && r.tags.includes('tal')).length;
   const instagramNamed = recipes.filter(r => r.name && r.name.includes('מתכון מאינסטגרם')).length;
