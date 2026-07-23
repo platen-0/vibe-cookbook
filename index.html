@@ -24,7 +24,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
   <!-- Firebase Storage removed - requires paid plan -->
 
-  <link rel="stylesheet" href="styles.css?v=c3ba303c">
+  <link rel="stylesheet" href="styles.css?v=0c966bf3">
 </head>
 <body>
   <div class="app-container">
@@ -80,64 +80,172 @@
       </div>
     </div>
 
-    <!-- Add Recipe Modal -->
+    <!-- Smart Recipe Import Modal -->
     <div class="modal" id="add-modal">
-      <div class="modal-content add-modal-content">
+      <div class="modal-content add-modal-content recipe-import-modal">
         <button class="modal-close" id="add-modal-close">&times;</button>
         <div class="modal-body">
-          <h2 class="modal-title">הוסף מתכון חדש</h2>
+          <header class="import-header">
+            <span class="import-eyebrow">דף חדש בספר</span>
+            <h2 class="modal-title">הוספת מתכון</h2>
+            <p class="modal-subtitle">מדביקים קישור או טקסט, בודקים את מה שחולץ — ורק אז שומרים.</p>
+            <ol class="import-steps" aria-label="שלבי הוספת מתכון">
+              <li class="active"><span>1</span> מקור</li>
+              <li><span>2</span> בדיקה</li>
+              <li><span>3</span> שמירה</li>
+            </ol>
+          </header>
 
-          <div class="form-tabs">
-            <button class="form-tab active" data-tab="link">קישור</button>
-            <button class="form-tab" data-tab="text">טקסט</button>
-            <!-- Image tab disabled - requires Firebase Storage (paid plan) -->
+          <div class="form-tabs import-tabs" role="tablist" aria-label="סוג מקור">
+            <button type="button" class="form-tab active" data-tab="link" role="tab" aria-selected="true">
+              חילוץ מקישור
+            </button>
+            <button type="button" class="form-tab" data-tab="text" role="tab" aria-selected="false">
+              הזנה ידנית
+            </button>
           </div>
 
           <form id="add-recipe-form">
             <!-- Link Tab -->
             <div class="form-tab-content active" data-tab="link">
-              <div class="form-group">
-                <label for="recipe-url">קישור למתכון</label>
-                <input type="url" id="recipe-url" placeholder="https://www.instagram.com/reel/..." dir="ltr">
+              <section class="import-source-card">
+                <div class="form-group">
+                  <label for="recipe-url">קישור למתכון</label>
+                  <div class="import-url-row">
+                    <input type="url" id="recipe-url" placeholder="https://…" dir="ltr" inputmode="url">
+                    <button type="button" class="btn btn-primary import-analyze-btn" id="analyze-recipe">
+                      <span class="analyze-label">חלץ מתכון</span>
+                      <span class="analyze-loading" hidden>מחלץ…</span>
+                    </button>
+                  </div>
+                  <p class="field-hint">מתאים לאתרי מתכונים, YouTube וקישורים ציבוריים.</p>
+                </div>
+
+                <div class="social-import-helper" id="social-import-helper" hidden>
+                  <div class="social-helper-heading">
+                    <span aria-hidden="true">◌</span>
+                    <div>
+                      <strong>מתכון מרשת חברתית?</strong>
+                      <p>אפשר להדביק את תיאור הפוסט או לצרף צילום מסך. אין צורך בחיבור ל‑Meta.</p>
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label for="social-recipe-text">תיאור הפוסט או התגובה הראשונה</label>
+                    <textarea id="social-recipe-text" rows="5" placeholder="הדביקי כאן את הטקסט…" dir="auto"></textarea>
+                  </div>
+                  <div class="import-upload-zone compact">
+                    <input type="file" id="social-screenshots" accept="image/jpeg,image/png,image/webp" multiple hidden>
+                    <label for="social-screenshots" class="upload-zone-label">
+                      <span class="upload-zone-icon" aria-hidden="true">▧</span>
+                      <span><strong>הוספת צילומי מסך</strong><small>עד שני צילומים</small></span>
+                    </label>
+                    <div class="screenshot-previews" id="screenshot-previews"></div>
+                  </div>
+                </div>
+              </section>
+
+              <div class="import-progress" id="import-progress" role="status" aria-live="polite" hidden>
+                <span class="import-progress-mark" aria-hidden="true"></span>
+                <div>
+                  <strong id="import-progress-title">קורא את המקור…</strong>
+                  <span id="import-progress-detail">מאתר טקסט ותמונות</span>
+                </div>
               </div>
-              <div class="form-group">
-                <label for="recipe-name-link">שם המתכון</label>
-                <input type="text" id="recipe-name-link" placeholder="שם המתכון">
-              </div>
+
+              <section class="import-review" id="import-review" hidden>
+                <div class="import-review-heading">
+                  <div>
+                    <span class="import-eyebrow">טיוטה לבדיקה</span>
+                    <h3>מצאנו מתכון</h3>
+                  </div>
+                  <span class="confidence-badge" id="import-confidence"></span>
+                </div>
+
+                <div class="form-group">
+                  <label for="recipe-name-link">שם המתכון</label>
+                  <input type="text" id="recipe-name-link" placeholder="שם המתכון" autocomplete="off">
+                </div>
+                <div class="form-group">
+                  <label for="recipe-text-link">תוכן המתכון</label>
+                  <textarea id="recipe-text-link" rows="12" placeholder="המרכיבים ואופן ההכנה יופיעו כאן…"></textarea>
+                </div>
+
+                <div class="image-candidates-section" id="image-candidates-section" hidden>
+                  <div class="section-label-row">
+                    <label>תמונה שנמצאה בקישור</label>
+                    <span>לבחירה</span>
+                  </div>
+                  <div class="image-candidates" id="image-candidates"></div>
+                </div>
+              </section>
+
+              <div class="import-inline-notice" id="import-inline-notice" hidden></div>
             </div>
 
             <!-- Text Tab -->
             <div class="form-tab-content" data-tab="text">
+              <div class="manual-entry-intro">
+                <span aria-hidden="true">✎</span>
+                <p><strong>יש לך כבר את המתכון?</strong> אפשר לשמור אותו כמו שהוא ולהוסיף תמונה מהמכשיר.</p>
+              </div>
               <div class="form-group">
                 <label for="recipe-name-text">שם המתכון</label>
-                <input type="text" id="recipe-name-text" placeholder="שם המתכון">
+                <input type="text" id="recipe-name-text" placeholder="למשל: עוגת הלימון של סבתא">
               </div>
               <div class="form-group">
                 <label for="recipe-text">תוכן המתכון</label>
-                <textarea id="recipe-text" rows="8" placeholder="הכניסי את המתכון כאן..."></textarea>
+                <textarea id="recipe-text" rows="10" placeholder="מרכיבים, כמויות ואופן ההכנה…"></textarea>
               </div>
             </div>
 
-            <!-- Image Tab removed - requires Firebase Storage (paid plan) -->
-
             <!-- Common Fields -->
-            <div class="form-group">
-              <label for="recipe-category">קטגוריה</label>
-              <select id="recipe-category">
-                <!-- Will be populated by JS -->
-              </select>
-            </div>
+            <section class="import-details-section">
+              <div class="import-upload-zone" id="recipe-image-zone">
+                <input type="file" id="recipe-image-upload" accept="image/jpeg,image/png,image/webp" hidden>
+                <label for="recipe-image-upload" class="upload-zone-label">
+                  <span class="upload-zone-icon" aria-hidden="true">▧</span>
+                  <span><strong>תמונה למתכון</strong><small>בחירה מהמכשיר או מהקישור</small></span>
+                  <span class="upload-zone-action">בחירת תמונה</span>
+                </label>
+                <div class="selected-image-preview" id="selected-image-preview" hidden>
+                  <img id="selected-image" src="" alt="תצוגה מקדימה של התמונה">
+                  <div>
+                    <strong id="selected-image-name">תמונה נבחרה</strong>
+                    <span id="selected-image-size"></span>
+                  </div>
+                  <button type="button" id="remove-selected-image" aria-label="הסרת התמונה">&times;</button>
+                </div>
+              </div>
 
-            <div class="form-group">
-              <label for="recipe-notes">הערות (אופציונלי)</label>
-              <input type="text" id="recipe-notes" placeholder="הערות נוספות...">
-            </div>
+              <div class="form-group">
+                <div class="section-label-row">
+                  <label for="recipe-category">קטגוריה</label>
+                  <span id="category-suggestion" hidden></span>
+                </div>
+                <select id="recipe-category">
+                  <!-- Will be populated by JS -->
+                </select>
+              </div>
+
+              <div class="form-group">
+                <div class="section-label-row">
+                  <label>תגיות</label>
+                  <span>אפשר לשנות לפני השמירה</span>
+                </div>
+                <div class="import-tags-selector" id="import-tags-selector"></div>
+              </div>
+
+              <div class="form-group">
+                <label for="recipe-notes">הערה אישית <span class="optional-label">לא חובה</span></label>
+                <input type="text" id="recipe-notes" placeholder="למשל: להפחית מעט סוכר">
+              </div>
+            </section>
 
             <div class="form-actions">
               <button type="button" class="btn btn-secondary" id="cancel-add">ביטול</button>
               <button type="submit" class="btn btn-primary" id="submit-add">
-                <span class="btn-text">הוסף מתכון</span>
-                <span class="btn-loading" style="display:none;">מעבד...</span>
+                <span class="btn-text">שמור בספר</span>
+                <span class="btn-loading" style="display:none;">שומר…</span>
               </button>
             </div>
           </form>
@@ -184,7 +292,41 @@
       </div>
     </div>
 
-    <!-- Add Image Modal removed - requires Firebase Storage (paid plan) -->
+    <!-- Add or Replace Recipe Image Modal -->
+    <div class="modal" id="edit-image-modal">
+      <div class="modal-content transcription-modal-content">
+        <button class="modal-close" id="edit-image-modal-close">&times;</button>
+        <div class="modal-body">
+          <span class="import-eyebrow">תמונה לכרטיס</span>
+          <h2 class="modal-title">הוספה או החלפה של תמונה</h2>
+          <p class="modal-subtitle">התמונה תכווץ במכשיר ותישמר ב‑GitHub Pages, בלי Firebase Storage.</p>
+
+          <div class="import-upload-zone edit-image-zone">
+            <input type="file" id="edit-recipe-image-upload" accept="image/jpeg,image/png,image/webp" hidden>
+            <label for="edit-recipe-image-upload" class="upload-zone-label">
+              <span class="upload-zone-icon" aria-hidden="true">▧</span>
+              <span><strong>בחירת תמונה</strong><small>JPEG, PNG או WebP</small></span>
+              <span class="upload-zone-action">מהמכשיר</span>
+            </label>
+            <div class="selected-image-preview" id="edit-image-preview" hidden>
+              <img id="edit-selected-image" src="" alt="תצוגה מקדימה של התמונה">
+              <div>
+                <strong id="edit-selected-image-name">תמונה נבחרה</strong>
+                <span id="edit-selected-image-size"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" id="cancel-edit-image">ביטול</button>
+            <button type="button" class="btn btn-primary" id="save-edit-image" disabled>
+              <span class="btn-text">שמור תמונה</span>
+              <span class="btn-loading" style="display:none;">שומר…</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Edit Tags Modal -->
     <div class="modal" id="edit-tags-modal">
@@ -325,13 +467,15 @@
           </div>
 
           <div class="settings-section">
-            <h3>🤖 OpenAI API</h3>
-            <p class="settings-desc">הזיני מפתח API של OpenAI לתמלול אוטומטי של סרטונים</p>
-            <div class="form-group">
-              <label for="openai-key">מפתח API</label>
-              <input type="password" id="openai-key" placeholder="sk-..." dir="ltr">
+            <h3>חילוץ מתכונים</h3>
+            <p class="settings-desc">מפתח OpenAI נשמר בשירות הייבוא המאובטח ולעולם לא בדפדפן.</p>
+            <div class="import-service-status" id="import-service-status">
+              <span class="status-dot"></span>
+              <div>
+                <strong>בודק את שירות הייבוא…</strong>
+                <small>חילוץ טקסט ושמירת תמונות</small>
+              </div>
             </div>
-            <p class="settings-note">המפתח נשמר מקומית בדפדפן שלך בלבד</p>
           </div>
 
           <div class="form-actions">
@@ -352,6 +496,7 @@
     <div class="toast-container" id="toast-container"></div>
   </div>
 
-  <script src="app.js?v=24b6f163"></script>
+  <script src="import-config.js?v=12c0a617"></script>
+  <script src="app.js?v=71ea27ce"></script>
 </body>
 </html>

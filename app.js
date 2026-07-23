@@ -31,6 +31,10 @@
 
   // Storage removed - requires paid Firebase plan
   const auth = firebase.auth();
+  const IMPORTER_URL = (
+    window.COOKBOOK_CONFIG?.importerUrl ||
+    (/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) ? 'http://localhost:8787' : '')
+  ).replace(/\/$/, '');
 
   // Allowed email addresses that can edit recipes
   const ALLOWED_EDITORS = [
@@ -56,7 +60,12 @@
   let currentFormTab = 'link';
   let isInitialized = false;
   let isOfflineMode = false; // True when using fallback data (recipes.json)
-  // Image upload removed - requires paid Firebase plan
+  let importDraft = null;
+  let importScreenshots = [];
+  let importSelectedTags = [];
+  let importTagsTouched = false;
+  let selectedRecipeImage = null;
+  let editingRecipeImage = null;
 
   // Main category hierarchy
   const MAIN_CATEGORIES = [
@@ -167,8 +176,25 @@
   const settingsModalClose = document.getElementById('settings-modal-close');
   const cancelSettingsBtn = document.getElementById('cancel-settings');
   const saveSettingsBtn = document.getElementById('save-settings');
-  const openaiKeyInput = document.getElementById('openai-key');
-  // Image modal elements removed - requires paid Firebase plan
+  const analyzeRecipeBtn = document.getElementById('analyze-recipe');
+  const socialImportHelper = document.getElementById('social-import-helper');
+  const socialScreenshotsInput = document.getElementById('social-screenshots');
+  const screenshotPreviews = document.getElementById('screenshot-previews');
+  const importProgress = document.getElementById('import-progress');
+  const importReview = document.getElementById('import-review');
+  const importInlineNotice = document.getElementById('import-inline-notice');
+  const imageCandidatesSection = document.getElementById('image-candidates-section');
+  const imageCandidates = document.getElementById('image-candidates');
+  const recipeImageInput = document.getElementById('recipe-image-upload');
+  const selectedImagePreview = document.getElementById('selected-image-preview');
+  const importTagsSelector = document.getElementById('import-tags-selector');
+  const importServiceStatus = document.getElementById('import-service-status');
+  const editImageModal = document.getElementById('edit-image-modal');
+  const editImageModalClose = document.getElementById('edit-image-modal-close');
+  const editRecipeImageInput = document.getElementById('edit-recipe-image-upload');
+  const editImagePreview = document.getElementById('edit-image-preview');
+  const saveEditImageBtn = document.getElementById('save-edit-image');
+  const cancelEditImageBtn = document.getElementById('cancel-edit-image');
   const editTagsModal = document.getElementById('edit-tags-modal');
   const editTagsModalClose = document.getElementById('edit-tags-modal-close');
   const cancelEditTagsBtn = document.getElementById('cancel-edit-tags');
@@ -306,6 +332,7 @@
     renderCategories();
     populateCategorySelect();
     setupEventListeners();
+    renderImportTagSelector();
 
     // Try to load from localStorage cache first for instant display
     // Note: localStorage may not be available in private browsing mode
@@ -691,7 +718,7 @@
       if (subCats.length > 0) {
         html += `<optgroup label="${mainCat.icon} ${mainCat.name}">`;
         subCats.forEach(subCat => {
-          html += `<option value="${subCat.id}">${subCat.icon} ${subCat.name}</option>`;
+          html += `<option value="${subCat.id}" data-main="${mainCat.id}">${subCat.icon} ${subCat.name}</option>`;
         });
         html += `</optgroup>`;
       }
@@ -899,11 +926,12 @@
       }
     }
 
-    // Add image button removed - requires paid Firebase plan
-
     // Edit tags button (only if can edit)
     if (canEdit) {
       contentHtml += `
+        <button class="add-image-btn" data-action="edit-image">
+          ▧ ${recipe.content?.uploadedImages?.length ? 'החלף תמונה' : 'הוסף תמונה'}
+        </button>
         <button class="edit-tags-btn" data-action="edit-tags">
           🏷️ ערוך תגיות
         </button>
@@ -1126,7 +1154,7 @@
     addModal.classList.remove('active');
     document.body.style.overflow = '';
     addRecipeForm.reset();
-    clearImageSelection();
+    resetImportState();
   }
 
   // Open add recipe modal
@@ -1136,6 +1164,7 @@
       openAuthModal();
       return;
     }
+    resetImportState();
     addModal.classList.add('active');
     document.body.style.overflow = 'hidden';
   }
@@ -1182,12 +1211,13 @@
     submitBtn.disabled = true;
 
     try {
-      // Auto-generate tags based on recipe content
-      const autoTags = autoTagRecipe({
-        name: formData.name,
-        content: formData.content,
-        notes: formData.notes
-      });
+      const autoTags = Array.isArray(formData.tags)
+        ? [...new Set(formData.tags)]
+        : autoTagRecipe({
+            name: formData.name,
+            content: formData.content,
+            notes: formData.notes
+          });
 
       // Add user-specific tag based on who is adding the recipe
       if (currentUser && EMAIL_TO_TAG[currentUser.email]) {
@@ -1197,9 +1227,17 @@
         }
       }
 
+      // Reserve the Firestore ID before uploading so the image path is stable.
+      const docRef = db.collection('recipes').doc();
+      if (formData.image) {
+        const storedImage = await uploadRecipeImage(docRef.id, formData.image);
+        formData.content.uploadedImages = [storedImage.url];
+      }
+
       const newRecipe = {
         name: formData.name,
         category: formData.category,
+        mainCategory: formData.mainCategory || null,
         type: formData.type,
         date: new Date().toISOString().split('T')[0],
         content: formData.content,
@@ -1208,8 +1246,7 @@
         addedBy: currentUser?.email || null
       };
 
-      // Generate ID first
-      const docRef = await db.collection('recipes').add(newRecipe);
+      await docRef.set(newRecipe);
       newRecipe.id = docRef.id;
 
       // Update local state
@@ -1268,6 +1305,530 @@
     return 'desserts'; // default
   }
 
+  function resetImportState() {
+    importDraft = null;
+    importScreenshots = [];
+    importTagsTouched = false;
+    selectedRecipeImage = null;
+    currentFormTab = 'link';
+
+    const personTag = currentUser ? EMAIL_TO_TAG[currentUser.email] : null;
+    importSelectedTags = personTag ? [personTag] : [];
+
+    addModal.querySelectorAll('.form-tab').forEach(tab => {
+      const isLink = tab.dataset.tab === 'link';
+      tab.classList.toggle('active', isLink);
+      tab.setAttribute('aria-selected', isLink ? 'true' : 'false');
+    });
+    addModal.querySelectorAll('.form-tab-content').forEach(content => {
+      content.classList.toggle('active', content.dataset.tab === 'link');
+    });
+
+    importProgress.hidden = true;
+    importReview.hidden = true;
+    importInlineNotice.hidden = true;
+    imageCandidatesSection.hidden = true;
+    socialImportHelper.hidden = true;
+    document.getElementById('category-suggestion').hidden = true;
+    document.getElementById('recipe-text-link').value = '';
+    screenshotPreviews.innerHTML = '';
+    imageCandidates.innerHTML = '';
+    socialScreenshotsInput.value = '';
+    recipeImageInput.value = '';
+    selectedImagePreview.hidden = true;
+    document.getElementById('selected-image').removeAttribute('src');
+    setImportStep(1);
+    setAnalyzeLoading(false);
+    renderImportTagSelector();
+  }
+
+  function renderImportTagSelector() {
+    if (!importTagsSelector) return;
+    importTagsSelector.innerHTML = AVAILABLE_TAGS.map(tag => `
+      <button
+        type="button"
+        class="import-tag-option ${importSelectedTags.includes(tag.id) ? 'selected' : ''}"
+        data-tag="${escapeHtml(tag.id)}"
+        style="--tag-color: ${escapeHtml(tag.color)}"
+        aria-pressed="${importSelectedTags.includes(tag.id)}"
+      >
+        <span aria-hidden="true">${tag.icon}</span>
+        ${escapeHtml(tag.name)}
+      </button>
+    `).join('');
+  }
+
+  function updateSocialImportVisibility() {
+    const url = document.getElementById('recipe-url').value.trim().toLowerCase();
+    const isSocial =
+      url.includes('instagram.com') ||
+      url.includes('facebook.com') ||
+      url.includes('fb.watch');
+    socialImportHelper.hidden = !isSocial;
+  }
+
+  async function analyzeNewRecipe() {
+    const url = document.getElementById('recipe-url').value.trim();
+    const socialText = document.getElementById('social-recipe-text').value.trim();
+
+    if (!url && !socialText && importScreenshots.length === 0) {
+      showToast('הוסיפי קישור, טקסט או צילום מסך', 'error');
+      return;
+    }
+    if (!currentUser || !canEdit) {
+      showToast('יש להתחבר עם חשבון מורשה כדי לחלץ מתכון', 'error');
+      openAuthModal();
+      return;
+    }
+    if (!IMPORTER_URL) {
+      showImportNotice('שירות הייבוא עדיין לא מחובר. אפשר להמשיך בהזנה ידנית.');
+      showToast('שירות הייבוא עדיין לא הוגדר', 'error');
+      return;
+    }
+
+    setAnalyzeLoading(true);
+    setImportProgress('קורא את המקור…', 'מאתר טקסט ותמונות');
+    importReview.hidden = true;
+    importInlineNotice.hidden = true;
+
+    try {
+      const result = await callImporter('/extract', {
+        url,
+        socialText,
+        screenshots: importScreenshots.map(item => item.dataUrl),
+        categories: categories.map(category => ({
+          id: category.id,
+          name: category.name
+        })),
+        tags: AVAILABLE_TAGS.map(tag => ({
+          id: tag.id,
+          name: tag.name
+        }))
+      });
+
+      if (!result.draft) {
+        updateSocialImportVisibility();
+        socialImportHelper.hidden = false;
+        showImportNotice(result.warning || 'לא נמצא מספיק טקסט. אפשר להדביק אותו או לצרף צילום מסך.');
+        return;
+      }
+
+      importDraft = result.draft;
+      applyImportDraft(result);
+      setImportStep(2);
+      showToast('הטיוטה מוכנה לבדיקה', 'success');
+    } catch (error) {
+      console.error('Smart import failed:', error);
+      showImportNotice(error.message || 'החילוץ לא הצליח. אפשר לנסות שוב או להזין ידנית.');
+      showToast(error.message || 'שגיאה בחילוץ המתכון', 'error');
+    } finally {
+      setAnalyzeLoading(false);
+      importProgress.hidden = true;
+    }
+  }
+
+  function applyImportDraft(result) {
+    const draft = result.draft;
+    document.getElementById('recipe-name-link').value = draft.title || '';
+    document.getElementById('recipe-text-link').value = draft.recipeText || '';
+    document.getElementById('import-confidence').textContent =
+      draft.confidence >= 0.8 ? 'ביטחון גבוה' : draft.confidence >= 0.55 ? 'כדאי לעבור על הפרטים' : 'נדרשת בדיקה';
+
+    if (draft.suggestedCategoryId) {
+      const categorySelect = document.getElementById('recipe-category');
+      const option = [...categorySelect.options].find(item => item.value === draft.suggestedCategoryId);
+      if (option) {
+        categorySelect.value = draft.suggestedCategoryId;
+        const suggestion = document.getElementById('category-suggestion');
+        suggestion.textContent = `הצעה: ${option.textContent.trim()}`;
+        suggestion.hidden = false;
+      }
+    }
+
+    const deterministicTags = autoTagRecipe({
+      name: draft.title,
+      content: { text: draft.recipeText },
+      notes: ''
+    });
+    const personTag = currentUser ? EMAIL_TO_TAG[currentUser.email] : null;
+    importSelectedTags = [...new Set([
+      ...(personTag ? [personTag] : []),
+      ...deterministicTags,
+      ...(draft.suggestedTags || [])
+    ])];
+    renderImportTagSelector();
+    renderImageCandidates(result.imageCandidates || []);
+    importReview.hidden = false;
+
+    if (draft.extractionNotes) {
+      showImportNotice(draft.extractionNotes);
+    }
+    importReview.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function renderImageCandidates(candidates) {
+    const safeCandidates = candidates.filter(candidate => {
+      try {
+        const url = new URL(candidate.url);
+        return url.protocol === 'https:' || url.protocol === 'http:';
+      } catch {
+        return false;
+      }
+    });
+
+    imageCandidates.innerHTML = safeCandidates.map((candidate, index) => `
+      <button
+        type="button"
+        class="image-candidate"
+        data-url="${escapeHtml(candidate.url)}"
+        aria-label="בחירת תמונה ${index + 1}"
+      >
+        <img src="${escapeHtml(candidate.url)}" alt="" loading="lazy" referrerpolicy="no-referrer">
+      </button>
+    `).join('');
+    imageCandidatesSection.hidden = safeCandidates.length === 0;
+
+    if (safeCandidates.length > 0) {
+      selectRemoteRecipeImage(safeCandidates[0].url);
+    }
+  }
+
+  function selectRemoteRecipeImage(url) {
+    selectedRecipeImage = {
+      sourceUrl: url,
+      dataUrl: '',
+      name: 'תמונה מהקישור',
+      bytes: 0
+    };
+    imageCandidates.querySelectorAll('.image-candidate').forEach(candidate => {
+      candidate.classList.toggle('selected', candidate.dataset.url === url);
+      candidate.setAttribute('aria-pressed', candidate.dataset.url === url ? 'true' : 'false');
+    });
+    showSelectedImage(url, 'תמונה מהקישור', 'תישמר יחד עם המתכון');
+  }
+
+  async function handleRecipeImage(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const image = await compressImageFile(file, {
+        maxDimension: 1_600,
+        maxBytes: 900_000,
+        quality: 0.84
+      });
+      selectedRecipeImage = {
+        dataUrl: image.dataUrl,
+        sourceUrl: '',
+        name: image.name,
+        bytes: image.bytes
+      };
+      imageCandidates.querySelectorAll('.image-candidate').forEach(candidate => {
+        candidate.classList.remove('selected');
+        candidate.setAttribute('aria-pressed', 'false');
+      });
+      showSelectedImage(image.dataUrl, image.name, formatFileSize(image.bytes));
+    } catch (error) {
+      console.error('Image preparation failed:', error);
+      recipeImageInput.value = '';
+      showToast(error.message || 'לא הצלחנו להכין את התמונה', 'error');
+    }
+  }
+
+  async function handleSocialScreenshots(event) {
+    const files = [...(event.target.files || [])].slice(0, 2);
+    if (!files.length) return;
+
+    try {
+      importScreenshots = [];
+      for (const file of files) {
+        importScreenshots.push(await compressImageFile(file, {
+          maxDimension: 1_800,
+          maxBytes: 2_800_000,
+          quality: 0.88
+        }));
+      }
+      renderScreenshotPreviews();
+    } catch (error) {
+      console.error('Screenshot preparation failed:', error);
+      showToast(error.message || 'לא הצלחנו להכין את צילום המסך', 'error');
+    }
+  }
+
+  function renderScreenshotPreviews() {
+    screenshotPreviews.innerHTML = importScreenshots.map((item, index) => `
+      <div class="screenshot-preview">
+        <img src="${item.dataUrl}" alt="צילום מסך ${index + 1}">
+        <button type="button" data-remove-screenshot="${index}" aria-label="הסרת צילום מסך ${index + 1}">&times;</button>
+      </div>
+    `).join('');
+  }
+
+  function clearSelectedRecipeImage() {
+    selectedRecipeImage = null;
+    recipeImageInput.value = '';
+    selectedImagePreview.hidden = true;
+    document.getElementById('selected-image').removeAttribute('src');
+    imageCandidates.querySelectorAll('.image-candidate').forEach(candidate => {
+      candidate.classList.remove('selected');
+      candidate.setAttribute('aria-pressed', 'false');
+    });
+  }
+
+  function showSelectedImage(src, name, detail) {
+    document.getElementById('selected-image').src = src;
+    document.getElementById('selected-image-name').textContent = name;
+    document.getElementById('selected-image-size').textContent = detail;
+    selectedImagePreview.hidden = false;
+  }
+
+  async function compressImageFile(file, options) {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      throw new Error('אפשר להעלות תמונת JPEG, PNG או WebP');
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      throw new Error('התמונה גדולה מדי');
+    }
+
+    const source = await loadImageSource(file);
+    let scale = Math.min(1, options.maxDimension / Math.max(source.width, source.height));
+    let quality = options.quality;
+    let blob;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const width = Math.max(1, Math.round(source.width * scale));
+      const height = Math.max(1, Math.round(source.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d', { alpha: false });
+      context.fillStyle = '#fdf8f3';
+      context.fillRect(0, 0, width, height);
+      context.drawImage(source.drawable, 0, 0, width, height);
+      blob = await canvasToBlob(canvas, 'image/webp', quality);
+      if (blob.size <= options.maxBytes) break;
+      scale *= 0.82;
+      quality = Math.max(0.64, quality - 0.06);
+    }
+
+    source.cleanup();
+    if (!blob || blob.size > options.maxBytes) {
+      throw new Error('לא הצלחנו לכווץ את התמונה לגודל המתאים');
+    }
+
+    return {
+      dataUrl: await blobToDataUrl(blob),
+      name: file.name.replace(/\.[^.]+$/, '') + '.webp',
+      bytes: blob.size
+    };
+  }
+
+  async function loadImageSource(file) {
+    if ('createImageBitmap' in window) {
+      const bitmap = await createImageBitmap(file);
+      return {
+        drawable: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        cleanup: () => bitmap.close()
+      };
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error('לא ניתן לקרוא את התמונה'));
+      image.src = objectUrl;
+    });
+    return {
+      drawable: image,
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      cleanup: () => URL.revokeObjectURL(objectUrl)
+    };
+  }
+
+  function canvasToBlob(canvas, type, quality) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error('לא ניתן לעבד את התמונה'));
+      }, type, quality);
+    });
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('לא ניתן לקרוא את התמונה'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function callImporter(path, body) {
+    if (!IMPORTER_URL) throw new Error('שירות הייבוא עדיין לא הוגדר');
+    if (!currentUser) throw new Error('יש להתחבר כדי להשתמש בשירות הייבוא');
+    const token = await currentUser.getIdToken();
+    const response = await fetch(`${IMPORTER_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || 'שירות הייבוא לא זמין');
+    return result;
+  }
+
+  async function uploadRecipeImage(recipeId, image) {
+    return callImporter('/images', {
+      recipeId,
+      ...(image.dataUrl ? { dataUrl: image.dataUrl } : { sourceUrl: image.sourceUrl })
+    });
+  }
+
+  function openEditImageModal() {
+    if (!canEdit || !currentRecipeId) return;
+    editingRecipeImage = null;
+    editRecipeImageInput.value = '';
+    editImagePreview.hidden = true;
+    saveEditImageBtn.disabled = true;
+    editImageModal.classList.add('active');
+  }
+
+  function closeEditImageModal() {
+    editImageModal.classList.remove('active');
+    editingRecipeImage = null;
+    editRecipeImageInput.value = '';
+    editImagePreview.hidden = true;
+    saveEditImageBtn.disabled = true;
+  }
+
+  async function handleEditRecipeImage(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      editingRecipeImage = await compressImageFile(file, {
+        maxDimension: 1_600,
+        maxBytes: 900_000,
+        quality: 0.84
+      });
+      document.getElementById('edit-selected-image').src = editingRecipeImage.dataUrl;
+      document.getElementById('edit-selected-image-name').textContent = editingRecipeImage.name;
+      document.getElementById('edit-selected-image-size').textContent = formatFileSize(editingRecipeImage.bytes);
+      editImagePreview.hidden = false;
+      saveEditImageBtn.disabled = false;
+    } catch (error) {
+      console.error('Edit image preparation failed:', error);
+      editRecipeImageInput.value = '';
+      showToast(error.message || 'לא הצלחנו להכין את התמונה', 'error');
+    }
+  }
+
+  async function saveEditedRecipeImage() {
+    if (!currentRecipeId || !editingRecipeImage || !canEdit) return;
+    const recipeId = currentRecipeId;
+    const recipe = recipes.find(item => item.id === recipeId);
+    if (!recipe) return;
+
+    const btnText = saveEditImageBtn.querySelector('.btn-text');
+    const btnLoading = saveEditImageBtn.querySelector('.btn-loading');
+    btnText.style.display = 'none';
+    btnLoading.style.display = 'inline';
+    saveEditImageBtn.disabled = true;
+
+    try {
+      const stored = await uploadRecipeImage(recipeId, editingRecipeImage);
+      if (!recipe.content) recipe.content = {};
+      recipe.content.uploadedImages = [stored.url];
+      await db.collection('recipes').doc(recipeId).update({
+        'content.uploadedImages': [stored.url]
+      });
+      updateRecipesCache();
+      renderRecipes();
+      closeEditImageModal();
+      openRecipe(recipeId);
+      showToast('התמונה נשמרה בהצלחה', 'success');
+    } catch (error) {
+      console.error('Save recipe image failed:', error);
+      showToast(error.message || 'שגיאה בשמירת התמונה', 'error');
+    } finally {
+      btnText.style.display = 'inline';
+      btnLoading.style.display = 'none';
+      saveEditImageBtn.disabled = !editingRecipeImage;
+    }
+  }
+
+  function getSelectedCategoryMain() {
+    return document.getElementById('recipe-category').selectedOptions[0]?.dataset.main || null;
+  }
+
+  function setAnalyzeLoading(isLoading) {
+    analyzeRecipeBtn.disabled = isLoading;
+    analyzeRecipeBtn.querySelector('.analyze-label').hidden = isLoading;
+    analyzeRecipeBtn.querySelector('.analyze-loading').hidden = !isLoading;
+  }
+
+  function setImportProgress(title, detail) {
+    document.getElementById('import-progress-title').textContent = title;
+    document.getElementById('import-progress-detail').textContent = detail;
+    importProgress.hidden = false;
+  }
+
+  function setImportStep(step) {
+    addModal.querySelectorAll('.import-steps li').forEach((item, index) => {
+      item.classList.toggle('active', index + 1 === step);
+      item.classList.toggle('complete', index + 1 < step);
+    });
+  }
+
+  function showImportNotice(message) {
+    importInlineNotice.textContent = message;
+    importInlineNotice.hidden = !message;
+  }
+
+  function formatFileSize(bytes) {
+    if (!bytes) return '';
+    return bytes < 1_000_000
+      ? `${Math.round(bytes / 1_000)} KB`
+      : `${(bytes / 1_000_000).toFixed(1)} MB`;
+  }
+
+  async function checkImportService() {
+    if (!importServiceStatus) return;
+    const title = importServiceStatus.querySelector('strong');
+    const detail = importServiceStatus.querySelector('small');
+    importServiceStatus.classList.remove('ready', 'error');
+
+    if (!IMPORTER_URL) {
+      importServiceStatus.classList.add('error');
+      title.textContent = 'שירות הייבוא עדיין לא חובר';
+      detail.textContent = 'נדרש URL של Cloudflare Worker בקובץ ההגדרות';
+      return;
+    }
+
+    title.textContent = 'בודק את שירות הייבוא…';
+    detail.textContent = 'חילוץ טקסט ושמירת תמונות';
+    try {
+      const response = await fetch(`${IMPORTER_URL}/health`);
+      const health = await response.json();
+      if (!response.ok || !health.ok || !health.openaiConfigured || !health.imageStorageConfigured) {
+        throw new Error('Service is not fully configured');
+      }
+      importServiceStatus.classList.add('ready');
+      title.textContent = 'שירות הייבוא מחובר';
+      detail.textContent = 'OpenAI ושמירת התמונות מוכנים';
+    } catch {
+      importServiceStatus.classList.add('error');
+      title.textContent = 'שירות הייבוא לא זמין';
+      detail.textContent = 'הזנה ידנית ממשיכה לעבוד כרגיל';
+    }
+  }
+
   // Format date
   function formatDate(dateStr) {
     if (!dateStr) return '';
@@ -1282,8 +1843,7 @@
     return div.innerHTML;
   }
 
-  // Image upload functions removed - requires paid Firebase plan
-  // Note: Existing uploaded images from Firebase Storage will still display
+  // Legacy Firebase Storage URLs still display; new images are served by GitHub Pages.
 
   // Setup event listeners
   function setupEventListeners() {
@@ -1387,21 +1947,23 @@
     addModalClose.addEventListener('click', closeAddModal);
     cancelAddBtn.addEventListener('click', closeAddModal);
 
-    // Image upload removed - requires paid Firebase plan
-
     addModal.addEventListener('click', (e) => {
       if (e.target === addModal) closeAddModal();
     });
 
     // Form tabs
-    document.querySelectorAll('.form-tab').forEach(tab => {
+    addModal.querySelectorAll('.form-tab').forEach(tab => {
       tab.addEventListener('click', () => {
-        document.querySelectorAll('.form-tab').forEach(t => t.classList.remove('active'));
-        document.querySelectorAll('.form-tab-content').forEach(c => c.classList.remove('active'));
+        addModal.querySelectorAll('.form-tab').forEach(t => {
+          t.classList.remove('active');
+          t.setAttribute('aria-selected', 'false');
+        });
+        addModal.querySelectorAll('.form-tab-content').forEach(c => c.classList.remove('active'));
 
         tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
         currentFormTab = tab.dataset.tab;
-        document.querySelector(`.form-tab-content[data-tab="${currentFormTab}"]`).classList.add('active');
+        addModal.querySelector(`.form-tab-content[data-tab="${currentFormTab}"]`).classList.add('active');
       });
     });
 
@@ -1416,7 +1978,35 @@
       document.getElementById('recipe-category').value = category;
     });
 
-    // Image name input removed - requires paid Firebase plan
+    document.getElementById('recipe-url').addEventListener('input', updateSocialImportVisibility);
+    analyzeRecipeBtn.addEventListener('click', analyzeNewRecipe);
+    socialScreenshotsInput.addEventListener('change', handleSocialScreenshots);
+    recipeImageInput.addEventListener('change', handleRecipeImage);
+    document.getElementById('remove-selected-image').addEventListener('click', clearSelectedRecipeImage);
+
+    imageCandidates.addEventListener('click', (e) => {
+      const candidate = e.target.closest('.image-candidate');
+      if (!candidate) return;
+      selectRemoteRecipeImage(candidate.dataset.url);
+    });
+
+    screenshotPreviews.addEventListener('click', (e) => {
+      const removeButton = e.target.closest('[data-remove-screenshot]');
+      if (!removeButton) return;
+      importScreenshots.splice(Number(removeButton.dataset.removeScreenshot), 1);
+      renderScreenshotPreviews();
+    });
+
+    importTagsSelector.addEventListener('click', (e) => {
+      const button = e.target.closest('.import-tag-option');
+      if (!button) return;
+      importTagsTouched = true;
+      const tagId = button.dataset.tag;
+      importSelectedTags = importSelectedTags.includes(tagId)
+        ? importSelectedTags.filter(tag => tag !== tagId)
+        : [...importSelectedTags, tagId];
+      renderImportTagSelector();
+    });
 
     // Form submit
     addRecipeForm.addEventListener('submit', async (e) => {
@@ -1427,6 +2017,7 @@
       if (currentFormTab === 'link') {
         const url = document.getElementById('recipe-url').value.trim();
         const name = document.getElementById('recipe-name-link').value.trim();
+        const text = document.getElementById('recipe-text-link').value.trim();
 
         if (!url) {
           showToast('נא להזין קישור', 'error');
@@ -1438,12 +2029,16 @@
         formData = {
           name: name || 'מתכון חדש',
           category: document.getElementById('recipe-category').value,
+          mainCategory: getSelectedCategoryMain(),
           type: videoType ? 'video' : 'link',
           content: {
             url: url,
-            videoType: videoType
+            videoType: videoType,
+            ...(text ? { text } : {})
           },
-          notes: document.getElementById('recipe-notes').value.trim()
+          notes: document.getElementById('recipe-notes').value.trim(),
+          tags: importTagsTouched || importDraft ? [...importSelectedTags] : undefined,
+          image: selectedRecipeImage
         };
       } else if (currentFormTab === 'text') {
         const name = document.getElementById('recipe-name-text').value.trim();
@@ -1457,14 +2052,16 @@
         formData = {
           name: name,
           category: document.getElementById('recipe-category').value,
+          mainCategory: getSelectedCategoryMain(),
           type: 'text',
           content: {
             text: text
           },
-          notes: document.getElementById('recipe-notes').value.trim()
+          notes: document.getElementById('recipe-notes').value.trim(),
+          tags: importTagsTouched ? [...importSelectedTags] : undefined,
+          image: selectedRecipeImage
         };
       }
-      // Image tab removed - requires paid Firebase plan
 
       await addRecipe(formData);
     });
@@ -1474,6 +2071,8 @@
       if (e.key === 'Escape') {
         if (settingsModal.classList.contains('active')) {
           closeSettingsModal();
+        } else if (editImageModal.classList.contains('active')) {
+          closeEditImageModal();
         } else if (editTagsModal.classList.contains('active')) {
           closeEditTagsModal();
         } else if (transcriptionModal.classList.contains('active')) {
@@ -1503,6 +2102,8 @@
       const action = btn.dataset.action;
       if (action === 'add-transcription' || action === 'edit-transcription') {
         openTranscriptionModal();
+      } else if (action === 'edit-image') {
+        openEditImageModal();
       } else if (action === 'edit-tags') {
         openEditTagsModal();
       } else if (action === 'edit-category') {
@@ -1512,7 +2113,13 @@
       }
     });
 
-    // Add image modal removed - requires paid Firebase plan
+    editImageModalClose.addEventListener('click', closeEditImageModal);
+    cancelEditImageBtn.addEventListener('click', closeEditImageModal);
+    editRecipeImageInput.addEventListener('change', handleEditRecipeImage);
+    saveEditImageBtn.addEventListener('click', saveEditedRecipeImage);
+    editImageModal.addEventListener('click', (e) => {
+      if (e.target === editImageModal) closeEditImageModal();
+    });
 
     // Transcription modal
     transcriptionModalClose.addEventListener('click', closeTranscriptionModal);
@@ -1766,24 +2373,17 @@
     }
 
     try {
-      // Use a CORS proxy to fetch the page
-      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-      const response = await fetch(proxyUrl);
-      const data = await response.json();
+      const result = await callImporter('/extract', {
+        url,
+        socialText: '',
+        screenshots: [],
+        categories: categories.map(category => ({ id: category.id, name: category.name })),
+        tags: AVAILABLE_TAGS.map(tag => ({ id: tag.id, name: tag.name }))
+      });
+      const recipeText = result.draft?.recipeText?.trim();
 
-      if (!data.contents) {
-        throw new Error('Failed to fetch page content');
-      }
-
-      // Parse the HTML
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(data.contents, 'text/html');
-
-      // Try to extract recipe content
-      let recipeText = extractRecipeContent(doc, url);
-
-      if (recipeText && recipeText.trim().length > 50) {
-        // Save the extracted text (use content.text as the unified field)
+      if (recipeText && recipeText.length > 50) {
+        // This action intentionally updates text only. Existing tags are preserved exactly.
         if (!recipe.content) recipe.content = {};
         recipe.content.text = recipeText;
 
@@ -1795,15 +2395,12 @@
         showToast('המתכון חולץ בהצלחה!', 'success');
         openRecipe(currentRecipeId); // Refresh modal
       } else {
-        showToast('לא הצלחנו לחלץ את המתכון. נסה העלאה ידנית.', 'error');
-        if (extractBtn) {
-          extractBtn.disabled = false;
-          extractBtn.textContent = '🔄 חלץ מתכון מהאתר';
-        }
+        throw new Error(result.warning || 'לא נמצא מספיק טקסט. אפשר להוסיף אותו ידנית.');
       }
     } catch (error) {
       console.error('Extraction failed:', error);
-      showToast('שגיאה בחילוץ המתכון. נסה העלאה ידנית.', 'error');
+      showToast(error.message || 'שגיאה בחילוץ המתכון. נסה העלאה ידנית.', 'error');
+    } finally {
       if (extractBtn) {
         extractBtn.disabled = false;
         extractBtn.textContent = '🔄 חלץ מתכון מהאתר';
@@ -2028,12 +2625,9 @@
 
   // Settings modal functions
   function openSettingsModal() {
-    // Load saved API key
-    const savedKey = localStorage.getItem('openai_api_key') || '';
-    openaiKeyInput.value = savedKey;
-
     // Update theme buttons state
     updateThemeButtons();
+    checkImportService();
 
     settingsModal.classList.add('active');
     document.body.style.overflow = 'hidden';
@@ -2045,16 +2639,7 @@
   }
 
   function saveSettings() {
-    const apiKey = openaiKeyInput.value.trim();
-
-    if (apiKey) {
-      localStorage.setItem('openai_api_key', apiKey);
-      showToast('ההגדרות נשמרו', 'success');
-    } else {
-      localStorage.removeItem('openai_api_key');
-      showToast('מפתח ה-API הוסר', 'success');
-    }
-
+    showToast('ההגדרות נשמרו', 'success');
     closeSettingsModal();
   }
 

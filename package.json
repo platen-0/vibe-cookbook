@@ -1,0 +1,10 @@
+{
+  "name": "vibe-cookbook",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test worker/test/*.test.js",
+    "worker:dev": "npx wrangler@latest dev --config worker/wrangler.jsonc",
+    "worker:deploy": "npx wrangler@latest deploy --config worker/wrangler.jsonc"
+  }
+}

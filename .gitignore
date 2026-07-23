@@ -1,3 +1,10 @@
 .DS_Store
 *.zip
 .claude/
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
+!.env.*.example
+node_modules/
+.wrangler/
