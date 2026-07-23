@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vibe-cookbook-importer",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-23",
+  "workers_dev": true,
+  "vars": {
+    "FIREBASE_PROJECT_ID": "vibe-cookbook",
+    "ALLOWED_ORIGINS": "https://platen-0.github.io",
+    "AUTHORIZED_EMAILS": "taladani@gmail.com,eliavschreiber@gmail.com,dschreiber@gmail.com,gidonschreiber@gmail.com,egorlin@gmail.com",
+    "GITHUB_REPOSITORY": "platen-0/vibe-cookbook",
+    "GITHUB_BRANCH": "main",
+    "IMAGE_PUBLIC_BASE": "https://platen-0.github.io/vibe-cookbook/",
+    "OPENAI_MODEL": "gpt-5.6-terra"
+  },
+  "secrets": {
+    "required": [
+      "OPENAI_API_KEY",
+      "GITHUB_TOKEN"
+    ]
+  }
+}

@@ -1,11 +1,11 @@
 #!/bin/bash
 # Pre-commit hook: Auto-updates cache-busting hashes in index.html
-# based on content of app.js and styles.css
+# based on content of app.js, styles.css, and the public importer config.
 
 # Only run if relevant files are staged
 STAGED=$(git diff --cached --name-only)
 
-if echo "$STAGED" | grep -qE '^(app\.js|styles\.css)$'; then
+if echo "$STAGED" | grep -qE '^(app\.js|styles\.css|import-config\.js)$'; then
   # Compute short MD5 hashes of file contents
   JS_HASH=$(md5 -q app.js 2>/dev/null || md5sum app.js | cut -c1-32)
   JS_HASH=${JS_HASH:0:8}
@@ -13,12 +13,16 @@ if echo "$STAGED" | grep -qE '^(app\.js|styles\.css)$'; then
   CSS_HASH=$(md5 -q styles.css 2>/dev/null || md5sum styles.css | cut -c1-32)
   CSS_HASH=${CSS_HASH:0:8}
 
+  CONFIG_HASH=$(md5 -q import-config.js 2>/dev/null || md5sum import-config.js | cut -c1-32)
+  CONFIG_HASH=${CONFIG_HASH:0:8}
+
   # Update index.html with new hashes
   sed -i '' "s/app\.js?v=[a-zA-Z0-9]*/app.js?v=$JS_HASH/" index.html
   sed -i '' "s/styles\.css?v=[a-zA-Z0-9]*/styles.css?v=$CSS_HASH/" index.html
+  sed -i '' "s/import-config\.js?v=[a-zA-Z0-9]*/import-config.js?v=$CONFIG_HASH/" index.html
 
   # Stage the updated index.html
   git add index.html
 
-  echo "Cache-busting hashes updated: app.js=$JS_HASH, styles.css=$CSS_HASH"
+  echo "Cache-busting hashes updated: app.js=$JS_HASH, styles.css=$CSS_HASH, import-config.js=$CONFIG_HASH"
 fi
