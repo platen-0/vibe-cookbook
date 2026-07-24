@@ -242,6 +242,7 @@
   function updateAuthUI() {
     const signedOutDiv = document.getElementById('auth-signed-out');
     const signedInDiv = document.getElementById('auth-signed-in');
+    const authLabel = authBtn.querySelector('.header-action-label');
 
     if (currentUser) {
       signedOutDiv.style.display = 'none';
@@ -261,12 +262,19 @@
       }
 
       authBtn.classList.add('signed-in');
-      authBtn.textContent = '✓';
+      if (authLabel) authLabel.textContent = 'החשבון שלי';
+      authBtn.title = 'החשבון שלי';
+      authBtn.setAttribute(
+        'aria-label',
+        `פתיחת החשבון של ${currentUser.displayName || currentUser.email || 'המשתמש'}`
+      );
     } else {
       signedOutDiv.style.display = 'block';
       signedInDiv.style.display = 'none';
       authBtn.classList.remove('signed-in');
-      authBtn.textContent = '👤';
+      if (authLabel) authLabel.textContent = 'התחברות';
+      authBtn.title = 'התחברות';
+      authBtn.setAttribute('aria-label', 'התחברות');
     }
   }
 
@@ -1602,7 +1610,7 @@
       canvas.width = width;
       canvas.height = height;
       const context = canvas.getContext('2d', { alpha: false });
-      context.fillStyle = '#fdf8f3';
+      context.fillStyle = '#f7f4ed';
       context.fillRect(0, 0, width, height);
       context.drawImage(source.drawable, 0, 0, width, height);
       blob = await canvasToBlob(canvas, 'image/webp', quality);
@@ -2656,6 +2664,9 @@
 
   function applyTheme(theme) {
     const html = document.documentElement;
+    const systemPrefersDark = window.matchMedia &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const isDark = theme === 'dark' || (theme === 'auto' && systemPrefersDark);
     html.classList.remove('dark-mode', 'light-mode');
 
     if (theme === 'dark') {
@@ -2664,6 +2675,9 @@
       html.classList.add('light-mode');
     }
     // 'auto' = no class, uses prefers-color-scheme
+
+    const themeColor = document.querySelector('meta[name="theme-color"]');
+    if (themeColor) themeColor.setAttribute('content', isDark ? '#171b18' : '#f7f4ed');
 
     try {
       localStorage.setItem('theme', theme);
@@ -2681,7 +2695,9 @@
       // localStorage not available (private browsing)
     }
     document.querySelectorAll('.theme-btn').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.theme === savedTheme);
+      const isActive = btn.dataset.theme === savedTheme;
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-pressed', String(isActive));
     });
   }
 
