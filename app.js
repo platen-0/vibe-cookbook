@@ -35,6 +35,10 @@
     window.COOKBOOK_CONFIG?.importerUrl ||
     (/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) ? 'http://localhost:8787' : '')
   ).replace(/\/$/, '');
+  const IS_LOCAL_COOKING_PREVIEW = (
+    /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) &&
+    new URLSearchParams(window.location.search).has('cooking-preview')
+  );
 
   // Allowed email addresses that can edit recipes
   const ALLOWED_EDITORS = [
@@ -67,6 +71,12 @@
   let selectedRecipeImage = null;
   let recipeImageAnalysisRequest = 0;
   let editingRecipeImage = null;
+  let cookingWorkspace = { recipeIds: [], activeRecipeId: null };
+  let cookingWorkspaceUnsubscribe = null;
+  let isCookingWorkspaceOpen = false;
+  let cookingSwipeStart = null;
+  let cookingReturnFocus = null;
+  let hasSeededCookingPreview = false;
 
   // Main category hierarchy
   const MAIN_CATEGORIES = [
@@ -217,6 +227,16 @@
   const authModalClose = document.getElementById('auth-modal-close');
   const googleSigninBtn = document.getElementById('google-signin-btn');
   const signoutBtn = document.getElementById('signout-btn');
+  const cookingFab = document.getElementById('cooking-fab');
+  const cookingFabCount = document.getElementById('cooking-fab-count');
+  const cookingWorkspaceElement = document.getElementById('cooking-workspace');
+  const cookingWorkspaceClose = document.getElementById('cooking-workspace-close');
+  const cookingRecipeRail = document.getElementById('cooking-recipe-rail');
+  const cookingStage = document.getElementById('cooking-stage');
+  const cookingClearBtn = document.getElementById('cooking-clear-btn');
+  const cookingClearConfirm = document.getElementById('cooking-clear-confirm');
+  const cookingClearCancel = document.getElementById('cooking-clear-cancel');
+  const cookingClearConfirmBtn = document.getElementById('cooking-clear-confirm-btn');
 
   // Track selected tags for the editor
   let editingRecipeTags = [];
@@ -231,12 +251,25 @@
 
   // Auth functions
   function setupAuth() {
+    if (IS_LOCAL_COOKING_PREVIEW) {
+      currentUser = {
+        uid: 'local-cooking-preview',
+        email: 'preview@local.test',
+        displayName: 'תצוגה מקדימה'
+      };
+      canEdit = false;
+      updateAuthUI();
+      updateEditButtonsVisibility();
+      return;
+    }
+
     // Listen for auth state changes
     auth.onAuthStateChanged((user) => {
       currentUser = user;
       canEdit = user && ALLOWED_EDITORS.includes(user.email);
       updateAuthUI();
       updateEditButtonsVisibility();
+      subscribeToCookingWorkspace(user);
     });
   }
 
@@ -323,6 +356,370 @@
   function closeAuthModal() {
     authModal.classList.remove('active');
     document.body.style.overflow = '';
+  }
+
+  // Live cooking workspace
+  function subscribeToCookingWorkspace(user) {
+    if (IS_LOCAL_COOKING_PREVIEW) return;
+
+    if (cookingWorkspaceUnsubscribe) {
+      cookingWorkspaceUnsubscribe();
+      cookingWorkspaceUnsubscribe = null;
+    }
+
+    cookingWorkspace = { recipeIds: [], activeRecipeId: null };
+    updateCookingUI();
+
+    if (!user) {
+      closeCookingWorkspace();
+      return;
+    }
+
+    cookingWorkspaceUnsubscribe = db
+      .collection('cookingWorkspaces')
+      .doc(user.uid)
+      .onSnapshot((snapshot) => {
+        cookingWorkspace = CookingWorkspaceCore.normalizeWorkspace(
+          snapshot.exists ? snapshot.data() : {}
+        );
+        updateCookingUI();
+      }, (error) => {
+        console.error('Cooking workspace sync failed:', error);
+        showToast('לא הצלחנו לסנכרן את הבישול עכשיו', 'error');
+      });
+  }
+
+  function getAvailableCookingWorkspace() {
+    const availableRecipeIds = recipes.map(recipe => recipe.id);
+    return CookingWorkspaceCore.normalizeWorkspace(cookingWorkspace, availableRecipeIds);
+  }
+
+  function getCookingRecipes() {
+    const availableWorkspace = getAvailableCookingWorkspace();
+    return availableWorkspace.recipeIds
+      .map(id => recipes.find(recipe => recipe.id === id))
+      .filter(Boolean);
+  }
+
+  async function persistCookingWorkspace(nextWorkspace, successMessage = '') {
+    if (!currentUser) {
+      showToast('כדי לשמור בישול עכשיו צריך להתחבר', 'info');
+      openAuthModal();
+      return false;
+    }
+
+    if (isOfflineMode) {
+      showToast('בישול עכשיו אינו זמין במצב לא מקוון', 'error');
+      return false;
+    }
+
+    const previousWorkspace = cookingWorkspace;
+    cookingWorkspace = CookingWorkspaceCore.normalizeWorkspace(nextWorkspace);
+    updateCookingUI();
+
+    if (IS_LOCAL_COOKING_PREVIEW) {
+      if (successMessage) showToast(successMessage, 'success');
+      return true;
+    }
+
+    try {
+      await db.collection('cookingWorkspaces').doc(currentUser.uid).set({
+        recipeIds: cookingWorkspace.recipeIds,
+        activeRecipeId: cookingWorkspace.activeRecipeId,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      if (successMessage) showToast(successMessage, 'success');
+      return true;
+    } catch (error) {
+      console.error('Failed to save cooking workspace:', error);
+      cookingWorkspace = previousWorkspace;
+      updateCookingUI();
+      showToast('לא הצלחנו לשמור את השינוי', 'error');
+      return false;
+    }
+  }
+
+  async function toggleCookingRecipe(recipeId) {
+    if (!currentUser) {
+      showToast('התחברו כדי להוסיף מתכונים לבישול עכשיו', 'info');
+      openAuthModal();
+      return;
+    }
+
+    const isIncluded = cookingWorkspace.recipeIds.includes(recipeId);
+    const nextWorkspace = isIncluded
+      ? CookingWorkspaceCore.removeRecipe(cookingWorkspace, recipeId)
+      : CookingWorkspaceCore.addRecipe(cookingWorkspace, recipeId);
+
+    if (!isIncluded && nextWorkspace.recipeIds.length === cookingWorkspace.recipeIds.length) {
+      showToast(`אפשר לבשל עד ${CookingWorkspaceCore.MAX_RECIPES} מתכונים יחד`, 'info');
+      return;
+    }
+
+    await persistCookingWorkspace(
+      nextWorkspace,
+      isIncluded ? 'המתכון הוסר מבישול עכשיו' : 'המתכון נוסף לבישול עכשיו'
+    );
+  }
+
+  async function selectCookingRecipe(recipeId) {
+    const nextWorkspace = CookingWorkspaceCore.selectRecipe(cookingWorkspace, recipeId);
+    if (nextWorkspace.activeRecipeId === cookingWorkspace.activeRecipeId) return;
+    await persistCookingWorkspace(nextWorkspace);
+  }
+
+  async function removeCookingRecipe(recipeId) {
+    const nextWorkspace = CookingWorkspaceCore.removeRecipe(cookingWorkspace, recipeId);
+    const saved = await persistCookingWorkspace(nextWorkspace, 'המתכון הוסר מבישול עכשיו');
+    if (saved && nextWorkspace.recipeIds.length === 0) closeCookingWorkspace();
+  }
+
+  async function clearCookingWorkspace() {
+    if (!currentUser) return;
+
+    const previousWorkspace = cookingWorkspace;
+    cookingWorkspace = { recipeIds: [], activeRecipeId: null };
+    cookingClearConfirm.hidden = true;
+    updateCookingUI();
+    closeCookingWorkspace();
+
+    if (IS_LOCAL_COOKING_PREVIEW) {
+      showToast('המטבח נקי ומוכן לפעם הבאה', 'success');
+      return;
+    }
+
+    try {
+      await db.collection('cookingWorkspaces').doc(currentUser.uid).delete();
+      showToast('המטבח נקי ומוכן לפעם הבאה', 'success');
+    } catch (error) {
+      console.error('Failed to clear cooking workspace:', error);
+      cookingWorkspace = previousWorkspace;
+      updateCookingUI();
+      showToast('לא הצלחנו לנקות את המטבח', 'error');
+    }
+  }
+
+  function getRecipePrimaryImage(recipe) {
+    const uploadedImage = recipe.content?.uploadedImages?.find(Boolean);
+    if (uploadedImage) return uploadedImage;
+
+    const localImage = recipe.content?.images?.find(image => image && !image.endsWith('.docx'));
+    return localImage ? `images/${localImage}` : '';
+  }
+
+  function getCookingRecipeMedia(recipe) {
+    const imageUrl = getRecipePrimaryImage(recipe);
+    const imageHtml = imageUrl
+      ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(recipe.name || 'מתכון')}" class="cooking-hero-image">`
+      : '';
+    const sourceHtml = recipe.type === 'video' && recipe.content?.url
+      ? getVideoEmbed(recipe.content)
+      : '';
+
+    if (!imageHtml && !sourceHtml) {
+      const mainCategory = MAIN_CATEGORIES.find(category => category.id === getRecipeMainCategory(recipe));
+      return `
+        <div class="cooking-media-placeholder" aria-hidden="true">
+          <span>${mainCategory?.icon || '🍽️'}</span>
+        </div>
+      `;
+    }
+
+    return `${imageHtml}${sourceHtml}`;
+  }
+
+  function renderCookingWorkspace() {
+    const availableWorkspace = getAvailableCookingWorkspace();
+    const cookingRecipes = getCookingRecipes();
+
+    if (!cookingRecipes.length) {
+      cookingRecipeRail.innerHTML = '';
+      cookingStage.innerHTML = `
+        <div class="cooking-empty-state">
+          <span class="cooking-empty-rule" aria-hidden="true"></span>
+          <h3>המטבח מחכה למתכון הראשון</h3>
+          <p>חזרו לספר והוסיפו מתכון באמצעות “הוספה לבישול עכשיו”.</p>
+          <button type="button" data-action="close-cooking">חזרה לספר המתכונים</button>
+        </div>
+      `;
+      return;
+    }
+
+    const activeRecipe = cookingRecipes.find(
+      recipe => recipe.id === availableWorkspace.activeRecipeId
+    ) || cookingRecipes[0];
+    const activeIndex = cookingRecipes.findIndex(recipe => recipe.id === activeRecipe.id);
+
+    cookingRecipeRail.innerHTML = cookingRecipes.map((recipe, index) => {
+      const imageUrl = getRecipePrimaryImage(recipe);
+      const isActive = recipe.id === activeRecipe.id;
+      const mainCategory = MAIN_CATEGORIES.find(category => category.id === getRecipeMainCategory(recipe));
+      const thumbHtml = imageUrl
+        ? `<img src="${escapeHtml(imageUrl)}" alt="">`
+        : `<span class="cooking-rail-placeholder" aria-hidden="true">${mainCategory?.icon || '🍽️'}</span>`;
+
+      return `
+        <button
+          class="cooking-rail-item ${isActive ? 'active' : ''}"
+          type="button"
+          data-cooking-recipe-id="${escapeHtml(recipe.id)}"
+          aria-current="${isActive ? 'true' : 'false'}"
+          aria-label="מעבר למתכון ${index + 1}: ${escapeHtml(recipe.name || '')}"
+        >
+          <span class="cooking-rail-thumb">${thumbHtml}</span>
+          <span class="cooking-rail-name">${escapeHtml(recipe.name || 'מתכון')}</span>
+          <span class="cooking-rail-index">${index + 1}</span>
+        </button>
+      `;
+    }).join('');
+
+    const recipeText = activeRecipe.content?.text || activeRecipe.content?.transcription;
+    const category = categories.find(item => item.id === getRecipeSubCategory(activeRecipe));
+    const sourceLink = activeRecipe.content?.url
+      ? `
+        <a class="cooking-source-link" href="${escapeHtml(activeRecipe.content.url)}" target="_blank" rel="noopener">
+          <span>למקור המתכון</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+        </a>
+      `
+      : '';
+
+    cookingStage.innerHTML = `
+      <article
+        class="cooking-recipe ${recipeText ? 'has-recipe-text' : 'without-recipe-text'}"
+        data-active-recipe-id="${escapeHtml(activeRecipe.id)}"
+      >
+        <header class="cooking-recipe-header">
+          <div>
+            <span class="cooking-recipe-position">${activeIndex + 1} מתוך ${cookingRecipes.length}</span>
+            <h3>${escapeHtml(activeRecipe.name || 'מתכון')}</h3>
+            ${category ? `<p>${category.icon || ''} ${escapeHtml(category.name || '')}</p>` : ''}
+          </div>
+          <button
+            class="cooking-remove-btn"
+            type="button"
+            data-action="remove-cooking-recipe"
+            data-recipe-id="${escapeHtml(activeRecipe.id)}"
+            aria-label="הסרת ${escapeHtml(activeRecipe.name || 'המתכון')} מבישול עכשיו"
+          >
+            הסרה
+          </button>
+        </header>
+
+        <div class="cooking-recipe-layout">
+          <aside class="cooking-media-column">
+            ${getCookingRecipeMedia(activeRecipe)}
+          </aside>
+          <section class="cooking-copy-column">
+            <div class="cooking-copy-heading">
+              <span>המתכון</span>
+              ${sourceLink}
+            </div>
+            ${recipeText
+              ? `<div class="cooking-recipe-text">${escapeHtml(recipeText)}</div>`
+              : `
+                <div class="cooking-no-text">
+                  <h4>אין עדיין טקסט למתכון הזה</h4>
+                  <p>אפשר לבשל מהסרטון או מהקישור למקור שמופיעים לצד המתכון.</p>
+                </div>
+              `
+            }
+            ${activeRecipe.notes
+              ? `
+                <aside class="cooking-notes">
+                  <span>הערה</span>
+                  <p>${escapeHtml(activeRecipe.notes)}</p>
+                </aside>
+              `
+              : ''
+            }
+          </section>
+        </div>
+      </article>
+    `;
+    cookingStage.scrollTop = 0;
+
+    requestAnimationFrame(() => {
+      cookingRecipeRail
+        .querySelector('.cooking-rail-item.active')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    });
+  }
+
+  function updateCookingControls() {
+    const selectedIds = new Set(cookingWorkspace.recipeIds);
+    document.querySelectorAll('[data-action="toggle-cooking"]').forEach((button) => {
+      const isSelected = selectedIds.has(button.dataset.recipeId);
+      button.classList.toggle('selected', isSelected);
+      button.setAttribute('aria-pressed', String(isSelected));
+      button.title = isSelected ? 'הסרה מבישול עכשיו' : 'הוספה לבישול עכשיו';
+      const label = button.querySelector('.cooking-action-label');
+      if (label) label.textContent = isSelected ? 'בבישול עכשיו' : 'לבישול עכשיו';
+    });
+  }
+
+  function updateCookingUI() {
+    const availableWorkspace = getAvailableCookingWorkspace();
+    const count = availableWorkspace.recipeIds.length;
+
+    cookingFabCount.textContent = String(count);
+    cookingFab.hidden = !currentUser || count === 0 || isCookingWorkspaceOpen;
+    cookingFab.setAttribute('aria-expanded', String(isCookingWorkspaceOpen));
+    document.body.classList.toggle(
+      'has-cooking-fab',
+      Boolean(currentUser && count > 0 && !isCookingWorkspaceOpen)
+    );
+    cookingClearBtn.hidden = count === 0;
+    updateCookingControls();
+
+    if (isCookingWorkspaceOpen) renderCookingWorkspace();
+  }
+
+  function openCookingWorkspace() {
+    if (!currentUser) {
+      showToast('התחברו כדי לפתוח את הבישול עכשיו', 'info');
+      openAuthModal();
+      return;
+    }
+
+    if (!getCookingRecipes().length) return;
+
+    cookingReturnFocus = document.activeElement;
+    isCookingWorkspaceOpen = true;
+    cookingClearConfirm.hidden = true;
+    cookingWorkspaceElement.inert = false;
+    cookingWorkspaceElement.classList.add('active');
+    cookingWorkspaceElement.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('cooking-workspace-open');
+    document.body.style.overflow = 'hidden';
+    updateCookingUI();
+    cookingStage.focus({ preventScroll: true });
+  }
+
+  function closeCookingWorkspace() {
+    const wasOpen = isCookingWorkspaceOpen;
+    const returnFocus = cookingReturnFocus;
+    isCookingWorkspaceOpen = false;
+    cookingWorkspaceElement.classList.remove('active');
+    cookingWorkspaceElement.setAttribute('aria-hidden', 'true');
+    cookingWorkspaceElement.inert = true;
+    document.body.classList.remove('cooking-workspace-open');
+    document.body.style.overflow = '';
+    cookingClearConfirm.hidden = true;
+    updateCookingUI();
+    cookingReturnFocus = null;
+
+    if (wasOpen && returnFocus && !returnFocus.hidden && document.contains(returnFocus)) {
+      returnFocus.focus({ preventScroll: true });
+    }
+  }
+
+  function moveBetweenCookingRecipes(direction) {
+    const availableWorkspace = getAvailableCookingWorkspace();
+    const currentIndex = availableWorkspace.recipeIds.indexOf(availableWorkspace.activeRecipeId);
+    const nextIndex = currentIndex + direction;
+    if (nextIndex < 0 || nextIndex >= availableWorkspace.recipeIds.length) return;
+    selectCookingRecipe(availableWorkspace.recipeIds[nextIndex]);
   }
 
   // Initialize
@@ -779,6 +1176,18 @@
   function renderRecipes() {
     const filtered = getFilteredRecipes();
 
+    if (
+      IS_LOCAL_COOKING_PREVIEW &&
+      !hasSeededCookingPreview &&
+      recipes.length >= 3
+    ) {
+      cookingWorkspace = {
+        recipeIds: recipes.slice(0, 3).map(recipe => recipe.id),
+        activeRecipeId: recipes[0].id
+      };
+      hasSeededCookingPreview = true;
+    }
+
     // Build category name for display
     let categoryName = '';
     if (currentMainCategory === 'all') {
@@ -800,6 +1209,7 @@
           <p class="empty-state-text">לא נמצאו מתכונים</p>
         </div>
       `;
+      updateCookingUI();
       return;
     }
 
@@ -842,6 +1252,20 @@
       return `
         <article class="recipe-card" data-id="${recipe.id}">
           ${imageHtml}
+          <button
+            class="cooking-card-add"
+            type="button"
+            data-action="toggle-cooking"
+            data-recipe-id="${escapeHtml(recipe.id)}"
+            aria-pressed="false"
+            title="הוספה לבישול עכשיו"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path class="cooking-icon-pot" d="M5 11.5h14M7 11.5v-1a5 5 0 0 1 10 0v1M4 11.5v1.25A5.25 5.25 0 0 0 9.25 18h5.5A5.25 5.25 0 0 0 20 12.75V11.5M12 5.5V4"/>
+              <path class="cooking-icon-check" d="m7.5 12.5 3 3 6-7"/>
+            </svg>
+            <span class="cooking-action-label">לבישול עכשיו</span>
+          </button>
           <div class="recipe-info">
             <h2 class="recipe-name">${recipe.name}</h2>
             <div class="recipe-meta">
@@ -853,6 +1277,7 @@
         </article>
       `;
     }).join('');
+    updateCookingUI();
   }
 
   // Open recipe modal
@@ -915,6 +1340,22 @@
 
     // Action buttons container (only show edit buttons if user can edit)
     contentHtml += `<div class="recipe-action-buttons">`;
+
+    contentHtml += `
+      <button
+        class="modal-cooking-btn"
+        data-action="toggle-cooking"
+        data-recipe-id="${escapeHtml(recipe.id)}"
+        aria-pressed="false"
+        title="הוספה לבישול עכשיו"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path class="cooking-icon-pot" d="M5 11.5h14M7 11.5v-1a5 5 0 0 1 10 0v1M4 11.5v1.25A5.25 5.25 0 0 0 9.25 18h5.5A5.25 5.25 0 0 0 20 12.75V11.5M12 5.5V4"/>
+          <path class="cooking-icon-check" d="m7.5 12.5 3 3 6-7"/>
+        </svg>
+        <span class="cooking-action-label">לבישול עכשיו</span>
+      </button>
+    `;
 
     // Extraction is available for both website links and social/video posts.
     // Keep it visible when text already exists so a weak extraction can be rerun.
@@ -1018,6 +1459,7 @@
 
     modal.classList.add('active');
     document.body.style.overflow = 'hidden';
+    updateCookingControls();
   }
 
   // Known recipe websites with branding
@@ -1997,6 +2439,13 @@
 
     // Recipe cards
     recipesContainer.addEventListener('click', (e) => {
+      const cookingButton = e.target.closest('[data-action="toggle-cooking"]');
+      if (cookingButton) {
+        e.stopPropagation();
+        toggleCookingRecipe(cookingButton.dataset.recipeId);
+        return;
+      }
+
       const card = e.target.closest('.recipe-card');
       if (card) {
         openRecipe(card.dataset.id);
@@ -2174,7 +2623,9 @@
     // Keyboard
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        if (settingsModal.classList.contains('active')) {
+        if (isCookingWorkspaceOpen) {
+          closeCookingWorkspace();
+        } else if (settingsModal.classList.contains('active')) {
           closeSettingsModal();
         } else if (editImageModal.classList.contains('active')) {
           closeEditImageModal();
@@ -2189,6 +2640,10 @@
         } else if (modal.classList.contains('active')) {
           closeModal();
         }
+      } else if (isCookingWorkspaceOpen && e.key === 'ArrowLeft') {
+        moveBetweenCookingRecipes(1);
+      } else if (isCookingWorkspaceOpen && e.key === 'ArrowRight') {
+        moveBetweenCookingRecipes(-1);
       }
     });
 
@@ -2215,7 +2670,56 @@
         openEditCategoryModal();
       } else if (action === 'extract-recipe') {
         extractRecipeFromUrl();
+      } else if (action === 'toggle-cooking') {
+        toggleCookingRecipe(btn.dataset.recipeId);
       }
+    });
+
+    cookingFab.addEventListener('click', openCookingWorkspace);
+    cookingWorkspaceClose.addEventListener('click', closeCookingWorkspace);
+    cookingClearBtn.addEventListener('click', () => {
+      cookingClearConfirm.hidden = false;
+      cookingClearConfirm.querySelector('button')?.focus();
+    });
+    cookingClearCancel.addEventListener('click', () => {
+      cookingClearConfirm.hidden = true;
+      cookingClearBtn.focus();
+    });
+    cookingClearConfirmBtn.addEventListener('click', clearCookingWorkspace);
+
+    cookingRecipeRail.addEventListener('click', (e) => {
+      const recipeButton = e.target.closest('[data-cooking-recipe-id]');
+      if (recipeButton) selectCookingRecipe(recipeButton.dataset.cookingRecipeId);
+    });
+
+    cookingStage.addEventListener('click', (e) => {
+      const actionButton = e.target.closest('[data-action]');
+      if (!actionButton) return;
+
+      if (actionButton.dataset.action === 'remove-cooking-recipe') {
+        removeCookingRecipe(actionButton.dataset.recipeId);
+      } else if (actionButton.dataset.action === 'close-cooking') {
+        closeCookingWorkspace();
+      }
+    });
+
+    cookingStage.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' || e.target.closest('button, a, iframe')) return;
+      cookingSwipeStart = { x: e.clientX, y: e.clientY };
+    });
+
+    cookingStage.addEventListener('pointerup', (e) => {
+      if (!cookingSwipeStart) return;
+      const deltaX = e.clientX - cookingSwipeStart.x;
+      const deltaY = e.clientY - cookingSwipeStart.y;
+      cookingSwipeStart = null;
+
+      if (Math.abs(deltaX) < 64 || Math.abs(deltaX) < Math.abs(deltaY) * 1.4) return;
+      moveBetweenCookingRecipes(deltaX < 0 ? 1 : -1);
+    });
+
+    cookingStage.addEventListener('pointercancel', () => {
+      cookingSwipeStart = null;
     });
 
     editImageModalClose.addEventListener('click', closeEditImageModal);
