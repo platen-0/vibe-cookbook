@@ -65,6 +65,7 @@
   let importSelectedTags = [];
   let importTagsTouched = false;
   let selectedRecipeImage = null;
+  let recipeImageAnalysisRequest = 0;
   let editingRecipeImage = null;
 
   // Main category hierarchy
@@ -1314,6 +1315,7 @@
   }
 
   function resetImportState() {
+    recipeImageAnalysisRequest += 1;
     importDraft = null;
     importScreenshots = [];
     importTagsTouched = false;
@@ -1520,11 +1522,18 @@
     if (!file) return;
 
     try {
-      const image = await compressImageFile(file, {
-        maxDimension: 1_600,
-        maxBytes: 900_000,
-        quality: 0.84
-      });
+      const [image, analysisImage] = await Promise.all([
+        compressImageFile(file, {
+          maxDimension: 1_600,
+          maxBytes: 900_000,
+          quality: 0.84
+        }),
+        compressImageFile(file, {
+          maxDimension: 2_400,
+          maxBytes: 2_500_000,
+          quality: 0.9
+        })
+      ]);
       selectedRecipeImage = {
         dataUrl: image.dataUrl,
         sourceUrl: '',
@@ -1536,11 +1545,81 @@
         candidate.setAttribute('aria-pressed', 'false');
       });
       showSelectedImage(image.dataUrl, image.name, formatFileSize(image.bytes));
+      await analyzeUploadedRecipeImage(analysisImage, selectedRecipeImage);
     } catch (error) {
       console.error('Image preparation failed:', error);
       recipeImageInput.value = '';
       showToast(error.message || 'לא הצלחנו להכין את התמונה', 'error');
     }
+  }
+
+  async function analyzeUploadedRecipeImage(analysisImage, selectedImage) {
+    if (!currentUser || !canEdit || !IMPORTER_URL) return;
+
+    const requestId = ++recipeImageAnalysisRequest;
+    document.getElementById('selected-image-size').textContent = 'בודק אם יש בתמונה מתכון…';
+
+    try {
+      const result = await callImporter('/analyze-image', {
+        dataUrl: analysisImage.dataUrl,
+        categories: categories.map(category => ({ id: category.id, name: category.name })),
+        tags: AVAILABLE_TAGS.map(tag => ({ id: tag.id, name: tag.name }))
+      });
+      if (requestId !== recipeImageAnalysisRequest || selectedRecipeImage !== selectedImage) return;
+
+      if (result.recipeFound && result.draft?.recipeText) {
+        applyImageRecipeDraft(result.draft);
+        document.getElementById('selected-image-size').textContent = 'זוהה טקסט של מתכון';
+        showToast('טקסט המתכון חולץ מהתמונה', 'success');
+        return;
+      }
+
+      const classificationLabel = {
+        food_photo: 'צילום מנה',
+        other_text: 'לא זוהה טקסט של מתכון',
+        other: 'תמונה נבחרה'
+      }[result.classification] || 'תמונה נבחרה';
+      document.getElementById('selected-image-size').textContent =
+        `${classificationLabel} · ${formatFileSize(selectedImage.bytes)}`;
+    } catch (error) {
+      if (requestId !== recipeImageAnalysisRequest || selectedRecipeImage !== selectedImage) return;
+      console.error('Recipe image analysis failed:', error);
+      document.getElementById('selected-image-size').textContent = formatFileSize(selectedImage.bytes);
+    }
+  }
+
+  function applyImageRecipeDraft(draft) {
+    const nameInput = document.getElementById(
+      currentFormTab === 'link' ? 'recipe-name-link' : 'recipe-name-text'
+    );
+    const textInput = document.getElementById(
+      currentFormTab === 'link' ? 'recipe-text-link' : 'recipe-text'
+    );
+    if (!nameInput.value.trim()) nameInput.value = draft.title || '';
+    if (!textInput.value.trim()) textInput.value = draft.recipeText;
+
+    if (draft.suggestedCategoryId) {
+      const categorySelect = document.getElementById('recipe-category');
+      const option = [...categorySelect.options].find(
+        item => item.value === draft.suggestedCategoryId
+      );
+      if (option) {
+        categorySelect.value = draft.suggestedCategoryId;
+        const suggestion = document.getElementById('category-suggestion');
+        suggestion.textContent = `הצעה מהתמונה: ${option.textContent.trim()}`;
+        suggestion.hidden = false;
+      }
+    }
+
+    const personTag = currentUser ? EMAIL_TO_TAG[currentUser.email] : null;
+    importSelectedTags = [...new Set([
+      ...importSelectedTags,
+      ...(personTag ? [personTag] : []),
+      ...(draft.suggestedTags || [])
+    ])];
+    importTagsTouched = true;
+    renderImportTagSelector();
+    setImportStep(2);
   }
 
   async function handleSocialScreenshots(event) {
@@ -1573,6 +1652,7 @@
   }
 
   function clearSelectedRecipeImage() {
+    recipeImageAnalysisRequest += 1;
     selectedRecipeImage = null;
     recipeImageInput.value = '';
     selectedImagePreview.hidden = true;
