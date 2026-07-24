@@ -24,7 +24,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
   <!-- Firebase Storage removed - requires paid plan -->
 
-  <link rel="stylesheet" href="styles.css?v=ab142900">
+  <link rel="stylesheet" href="styles.css?v=15858ccc">
 </head>
 <body>
   <div class="app-container">
@@ -516,6 +516,53 @@
       </div>
     </div>
 
+    <!-- Persistent cooking workspace entry point -->
+    <button
+      class="cooking-fab"
+      id="cooking-fab"
+      type="button"
+      aria-controls="cooking-workspace"
+      aria-expanded="false"
+      hidden
+    >
+      <svg class="cooking-fab-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M5 11.5h14M7 11.5v-1a5 5 0 0 1 10 0v1M4 11.5v1.25A5.25 5.25 0 0 0 9.25 18h5.5A5.25 5.25 0 0 0 20 12.75V11.5M12 5.5V4"/>
+      </svg>
+      <span>אני במטבח עכשיו</span>
+      <span class="cooking-fab-count" id="cooking-fab-count">0</span>
+    </button>
+
+    <!-- Full-screen live cooking workspace -->
+    <section
+      class="cooking-workspace"
+      id="cooking-workspace"
+      aria-labelledby="cooking-workspace-title"
+      aria-hidden="true"
+      inert
+    >
+      <header class="cooking-workspace-header">
+        <button class="cooking-workspace-close" id="cooking-workspace-close" type="button" aria-label="חזרה לספר המתכונים">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg>
+        </button>
+        <div class="cooking-workspace-heading">
+          <span>בישול חי</span>
+          <h2 id="cooking-workspace-title">אני במטבח עכשיו</h2>
+        </div>
+        <button class="cooking-clear-btn" id="cooking-clear-btn" type="button">ניקוי המטבח</button>
+      </header>
+
+      <div class="cooking-clear-confirm" id="cooking-clear-confirm" hidden>
+        <p>להוציא את כל המתכונים מהמטבח?</p>
+        <div>
+          <button type="button" id="cooking-clear-cancel">ביטול</button>
+          <button type="button" class="danger" id="cooking-clear-confirm-btn">כן, לנקות</button>
+        </div>
+      </div>
+
+      <nav class="cooking-recipe-rail" id="cooking-recipe-rail" aria-label="המתכונים שבמטבח"></nav>
+      <main class="cooking-stage" id="cooking-stage" tabindex="-1"></main>
+    </section>
+
     <!-- Loading State -->
     <div class="loading" id="loading">
       <div class="loading-spinner"></div>
@@ -527,6 +574,7 @@
   </div>
 
   <script src="import-config.js?v=65bf8a87"></script>
-  <script src="app.js?v=db143a25"></script>
+  <script src="cooking-workspace-core.js?v=2f597c9e"></script>
+  <script src="app.js?v=e37f6dbd"></script>
 </body>
 </html>

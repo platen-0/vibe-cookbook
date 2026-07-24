@@ -21,5 +21,29 @@ service cloud.firestore {
       // Only allowed users can create, update, or delete recipes
       allow create, update, delete: if isAllowedEditor();
     }
+
+    // A private, lightweight list of recipe IDs for each signed-in cook.
+    match /cookingWorkspaces/{userId} {
+      function isWorkspaceOwner() {
+        return request.auth != null && request.auth.uid == userId;
+      }
+
+      function isValidWorkspace() {
+        return request.resource.data.keys().hasOnly([
+                 'recipeIds',
+                 'activeRecipeId',
+                 'updatedAt'
+               ]) &&
+               request.resource.data.recipeIds is list &&
+               request.resource.data.recipeIds.size() <= 12 &&
+               (
+                 request.resource.data.activeRecipeId == null ||
+                 request.resource.data.activeRecipeId in request.resource.data.recipeIds
+               );
+      }
+
+      allow read, delete: if isWorkspaceOwner();
+      allow create, update: if isWorkspaceOwner() && isValidWorkspace();
+    }
   }
 }
