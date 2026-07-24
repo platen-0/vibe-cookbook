@@ -5,7 +5,8 @@ Cloudflare Worker performs the operations that cannot safely run in the browser:
 
 - verifies the editor's Firebase ID token;
 - fetches public recipe pages and reads JSON-LD/Open Graph metadata;
-- sends page text, pasted social text, or screenshots to the OpenAI Responses API;
+- sends the full extracted blog article, public social description/first poster comment,
+  pasted social text, or screenshots to the OpenAI Responses API;
 - returns a structured **draft** for review;
 - stores a selected, compressed recipe image in this GitHub repository.
 
@@ -108,11 +109,18 @@ authorization. The importer therefore:
 2. asks for pasted caption/comment text or up to two screenshots when needed;
 3. uses OpenAI text/vision extraction to produce the same editable recipe draft.
 
+The model returns a draft only when it finds explicit ingredients, quantities, or actionable
+cooking steps. Headlines, introductions, food photos, page navigation, and unrelated prose are
+not accepted as recipe evidence.
+
 No Meta login, cookie, access token, or developer app is used.
 
 ## Operational limits
 
-- Uploaded images are converted in the browser to WebP and reduced below 900 KB.
+- Uploaded images are classified as food photos, recipe text, other text, or other imagery.
+  When readable recipe text is found, its ingredients and instructions are placed into the
+  editable recipe text field automatically.
+- Uploaded images are converted in the browser to WebP and reduced below 900 KB for storage.
 - Remotely extracted images must already be below 950 KB; otherwise the editor is asked to
   upload a smaller copy.
 - A repository image commit can take a short time to appear on GitHub Pages.
