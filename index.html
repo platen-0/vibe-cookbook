@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Let her cook">
   <link rel="apple-touch-icon" href="icon.png">
   <link rel="icon" type="image/png" href="icon.png">
-  <meta name="theme-color" content="#fdf8f3">
+  <meta name="theme-color" content="#f7f4ed">
 
   <!-- Prevent aggressive caching on iOS PWA -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
@@ -24,20 +24,42 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
   <!-- Firebase Storage removed - requires paid plan -->
 
-  <link rel="stylesheet" href="styles.css?v=0c966bf3">
+  <link rel="stylesheet" href="styles.css?v=ab142900">
 </head>
 <body>
   <div class="app-container">
     <!-- Header -->
     <header class="app-header">
-      <div class="header-top">
-        <h1>ספר המתכונים של טל</h1>
-        <button class="auth-btn" id="auth-btn" title="התחברות">👤</button>
-        <button class="settings-btn" id="settings-btn" title="הגדרות">⚙️</button>
-      </div>
-      <div class="search-container">
-        <input type="search" id="search-input" placeholder="חיפוש מתכונים..." autocomplete="off">
-        <button id="clear-search" class="clear-btn" aria-label="נקה חיפוש">&times;</button>
+      <div class="header-inner">
+        <div class="header-top">
+          <div class="header-brand">
+            <span class="header-eyebrow">אוסף המתכונים המשפחתי</span>
+            <h1>ספר המתכונים של טל ועינב</h1>
+          </div>
+          <div class="header-actions" aria-label="פעולות חשבון והגדרות">
+            <button class="header-action settings-btn" id="settings-btn" type="button" title="הגדרות" aria-label="פתיחת הגדרות">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"></path>
+              </svg>
+              <span class="header-action-label">הגדרות</span>
+            </button>
+            <button class="header-action auth-btn" id="auth-btn" type="button" title="התחברות" aria-label="פתיחת התחברות">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="8" r="3.25"></circle>
+                <path d="M5.75 19c.65-3.15 2.73-4.75 6.25-4.75s5.6 1.6 6.25 4.75"></path>
+              </svg>
+              <span class="header-action-label">התחברות</span>
+            </button>
+          </div>
+        </div>
+        <div class="search-container">
+          <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="10.75" cy="10.75" r="5.75"></circle>
+            <path d="m15 15 4 4"></path>
+          </svg>
+          <input type="search" id="search-input" placeholder="חיפוש לפי שם, מרכיב או תגית..." autocomplete="off">
+          <button id="clear-search" class="clear-btn" aria-label="נקה חיפוש">&times;</button>
+        </div>
       </div>
     </header>
 
@@ -448,7 +470,7 @@
       <div class="modal-content settings-modal-content">
         <button class="modal-close" id="settings-modal-close">&times;</button>
         <div class="modal-body">
-          <h2 class="modal-title">⚙️ הגדרות</h2>
+          <h2 class="modal-title">הגדרות</h2>
 
           <div class="settings-section" id="categories-settings-section">
             <h3>📂 קטגוריות</h3>
@@ -457,12 +479,20 @@
           </div>
 
           <div class="settings-section">
-            <h3>🌙 מצב תצוגה</h3>
-            <p class="settings-desc">בחרי בין מצב בהיר לכהה</p>
-            <div class="theme-toggle">
-              <button type="button" class="theme-btn" data-theme="light" id="theme-light">☀️ בהיר</button>
-              <button type="button" class="theme-btn" data-theme="dark" id="theme-dark">🌙 כהה</button>
-              <button type="button" class="theme-btn active" data-theme="auto" id="theme-auto">🔄 אוטומטי</button>
+            <h3>מצב תצוגה</h3>
+            <div class="theme-toggle" role="group" aria-label="בחירת מצב תצוגה">
+              <button type="button" class="theme-btn" data-theme="light" id="theme-light" aria-pressed="false">
+                <span>בהיר</span>
+                <span class="theme-palette theme-palette-light" aria-hidden="true"></span>
+              </button>
+              <button type="button" class="theme-btn" data-theme="dark" id="theme-dark" aria-pressed="false">
+                <span>כהה</span>
+                <span class="theme-palette theme-palette-dark" aria-hidden="true"></span>
+              </button>
+              <button type="button" class="theme-btn active" data-theme="auto" id="theme-auto" aria-pressed="true">
+                <span>אוטומטי</span>
+                <span class="theme-palette theme-palette-auto" aria-hidden="true"></span>
+              </button>
             </div>
           </div>
 
@@ -497,6 +527,6 @@
   </div>
 
   <script src="import-config.js?v=65bf8a87"></script>
-  <script src="app.js?v=71ea27ce"></script>
+  <script src="app.js?v=ede500d5"></script>
 </body>
 </html>
