@@ -916,16 +916,33 @@
     // Action buttons container (only show edit buttons if user can edit)
     contentHtml += `<div class="recipe-action-buttons">`;
 
-    // Show add text buttons only if no text exists
+    // Extraction is available for both website links and social/video posts.
+    // Keep it visible when text already exists so a weak extraction can be rerun.
+    if (
+      canEdit &&
+      recipe.content?.url &&
+      (recipe.type === 'link' || recipe.type === 'video')
+    ) {
+      const extractionSource = recipe.type === 'video' ? 'מהפוסט' : 'מהאתר';
+      const extractionAction = recipeText ? 'חלץ מחדש' : 'חלץ מתכון';
+      const extractionLabel = `${extractionAction} ${extractionSource}`;
+      contentHtml += `
+        <button
+          class="extract-recipe-btn"
+          data-action="extract-recipe"
+          data-idle-label="${extractionLabel}"
+          title="${recipe.type === 'video'
+            ? 'בדיקת תיאור הפוסט והתגובה הראשונה של היוצר'
+            : 'בדיקת עמוד המקור המלא'}"
+        >
+          <span aria-hidden="true">↻</span>
+          ${extractionLabel}
+        </button>
+      `;
+    }
+
+    // Show manual add-text button only if no text exists
     if (!recipeText) {
-      // Show extract button for link-type recipes without text
-      if (canEdit && recipe.type === 'link' && recipe.content?.url) {
-        contentHtml += `
-          <button class="extract-recipe-btn" data-action="extract-recipe">
-            🔄 חלץ מתכון מהאתר
-          </button>
-        `;
-      }
       if (canEdit) {
         contentHtml += `
           <button class="add-transcription-btn" data-action="add-transcription">
@@ -2455,9 +2472,15 @@
     const url = recipe.content.url;
     const extractBtn = document.querySelector('.extract-recipe-btn');
 
+    const idleLabel = extractBtn?.dataset.idleLabel || 'חלץ מתכון';
+    const isSocialVideo = recipe.type === 'video';
+
     if (extractBtn) {
       extractBtn.disabled = true;
-      extractBtn.textContent = '⏳ מחלץ...';
+      extractBtn.setAttribute('aria-busy', 'true');
+      extractBtn.textContent = isSocialVideo
+        ? 'בודק תיאור ותגובה ראשונה…'
+        : 'קורא את עמוד המתכון…';
     }
 
     try {
@@ -2491,7 +2514,8 @@
     } finally {
       if (extractBtn) {
         extractBtn.disabled = false;
-        extractBtn.textContent = '🔄 חלץ מתכון מהאתר';
+        extractBtn.removeAttribute('aria-busy');
+        extractBtn.innerHTML = `<span aria-hidden="true">↻</span> ${idleLabel}`;
       }
     }
   }
