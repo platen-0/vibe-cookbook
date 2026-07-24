@@ -215,7 +215,7 @@ async function requestOpenAiDraft({
         'Set recipeFound=true only when the source explicitly contains at least one ingredient/material/amount OR an actionable cooking or baking instruction.',
         'A headline, dish name, food photograph, personal story, introduction, restaurant description, or serving suggestion alone is not a recipe.',
         'For a blog, inspect the fullBlogPostText from beginning to end. Extract the recipe wherever it appears, even near the end.',
-        'For Instagram or Facebook, use the post description and the first comment by the original poster when supplied. Ignore comments by other people.',
+        'For social video posts including Instagram, Facebook, YouTube and TikTok, use the post description and the first comment by the original creator when supplied. Ignore comments by other people.',
         'For images, first distinguish a food photo from an image containing readable text. Never infer ingredients or a method from a food photo. If readable text contains a recipe, transcribe only its recipe content.',
         'Ingredients must contain only ingredients/materials and any quantities or preparation details explicitly stated in the source.',
         'Instructions must contain only actionable preparation/cooking steps in their original logical order, preserving explicit times, temperatures and settings.',
@@ -1284,7 +1284,10 @@ function isSocialUrl(rawUrl) {
   return (
     hostname.endsWith('instagram.com') ||
     hostname.endsWith('facebook.com') ||
-    hostname.endsWith('fb.watch')
+    hostname.endsWith('fb.watch') ||
+    hostname.endsWith('youtube.com') ||
+    hostname.endsWith('youtu.be') ||
+    hostname.endsWith('tiktok.com')
   );
 }
 

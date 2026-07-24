@@ -150,6 +150,35 @@ test('extracts a first Facebook comment when public embedded data identifies the
   assert.equal(context.firstPosterComment, 'אופים ב-200 מעלות');
 });
 
+test('treats YouTube descriptions and creator comments as social recipe context', () => {
+  const html = `
+    <html>
+      <head><meta property="og:description" content="2 כוסות קמח וכוס מים"></head>
+      <body>
+        <script type="application/json">
+          {
+            "video": {
+              "author": {"id": "channel-1", "name": "Cook"},
+              "description": {"text": "2 כוסות קמח וכוס מים"},
+              "comments": [
+                {"author": {"id": "viewer"}, "text": "נראה מעולה"},
+                {"author": {"id": "channel-1"}, "text": "אופים 25 דקות ב-180 מעלות"}
+              ]
+            }
+          }
+        </script>
+      </body>
+    </html>
+  `;
+  const context = extractSocialContext(
+    html,
+    { 'og:description': '2 כוסות קמח וכוס מים' },
+    'https://www.youtube.com/watch?v=example'
+  );
+  assert.equal(context.description, '2 כוסות קמח וכוס מים');
+  assert.equal(context.firstPosterComment, 'אופים 25 דקות ב-180 מעלות');
+});
+
 test('builds a strict image classification schema', () => {
   const schema = buildImageRecipeSchema(['dessert'], ['vegan']);
   assert.deepEqual(schema.properties.classification.enum, [
