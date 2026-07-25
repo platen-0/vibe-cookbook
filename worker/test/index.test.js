@@ -3,14 +3,17 @@ import test from 'node:test';
 
 import {
   analyzeRecipeImage,
+  buildCookingPlanSchema,
   buildImageRecipeSchema,
   buildRecipeSchema,
+  createCookingPlan,
   ensurePublicUrl,
   extractPageData,
   extractPrimaryPageText,
   extractRecipeDraft,
   extractSocialContext,
-  findRecipeInJsonLd
+  findRecipeInJsonLd,
+  storeRecipeImage
 } from '../src/index.js';
 
 test('extracts a structured recipe and its preferred image', () => {
@@ -292,6 +295,93 @@ test('classifies a food photo without creating a recipe draft', async () => {
     assert.equal(analysis.recipeFound, false);
     assert.equal(analysis.draft, null);
     assert.equal(requestBody.input[1].content[1].type, 'input_image');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('stores private recipe images in KV instead of the public repository', async () => {
+  const stored = new Map();
+  const env = {
+    IMAGE_SIGNING_SECRET: 'test-secret-that-is-long-enough-for-hmac',
+    RECIPE_IMAGES: {
+      async put(key, value, options) {
+        stored.set(key, { value, options });
+      }
+    }
+  };
+  const result = await storeRecipeImage(
+    {
+      recipeId: 'recipe_12345678',
+      private: true,
+      dataUrl: `data:image/png;base64,${Buffer.from('private-image').toString('base64')}`
+    },
+    { sub: 'user_123' },
+    env,
+    'https://worker.example'
+  );
+  assert.equal(result.protected, true);
+  assert.equal(result.privateKey, 'recipes/user_123/recipe_12345678.png');
+  assert.match(result.url, /^https:\/\/worker\.example\/private-images\//);
+  assert.equal(stored.has(result.privateKey), true);
+});
+
+test('builds a strict live-cooking schema and normalizes stable checklist ids', async () => {
+  const schema = buildCookingPlanSchema();
+  assert.equal(schema.additionalProperties, false);
+  assert.equal(schema.properties.timeline.items.additionalProperties, false);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith('https://firestore.googleapis.com/')) {
+      return new Response(JSON.stringify({ name: 'recipe' }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      output: [{
+        content: [{
+          type: 'output_text',
+          text: JSON.stringify({
+            recipes: [{
+              recipeId: 'recipe_a',
+              ingredients: ['2 בצלים'],
+              steps: [{ text: 'מטגנים 5 דקות', durationMinutes: 5, active: true }]
+            }],
+            combinedIngredients: [{
+              display: '2 בצלים',
+              normalizedName: 'בצל',
+              sources: [{ recipeId: 'recipe_a', ingredientIndex: 0 }],
+              note: ''
+            }],
+            timeline: [{
+              recipeId: 'recipe_a',
+              stepIndex: 0,
+              startsAfterMinutes: 0,
+              durationMinutes: 5,
+              active: true,
+              note: ''
+            }],
+            warnings: []
+          })
+        }]
+      }]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const result = await createCookingPlan({
+      recipes: [{ id: 'recipe_a', name: 'מרק', text: '2 בצלים. מטגנים 5 דקות.' }]
+    }, {
+      sub: 'user',
+      token: 'firebase-token'
+    }, {
+      FIREBASE_PROJECT_ID: 'test-project',
+      OPENAI_API_KEY: 'test-key'
+    });
+    assert.equal(result.recipes[0].ingredients[0].id, 'ingredient-recipe_a-0');
+    assert.deepEqual(result.combinedIngredients[0].sourceIds, [
+      'ingredient-recipe_a-0'
+    ]);
+    assert.equal(result.timeline[0].stepId, 'step-recipe_a-0');
   } finally {
     globalThis.fetch = originalFetch;
   }

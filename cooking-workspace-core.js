@@ -2,6 +2,7 @@
   'use strict';
 
   const MAX_RECIPES = 12;
+  const VALID_VIEWS = new Set(['recipes', 'ingredients', 'timeline']);
 
   function uniqueRecipeIds(recipeIds) {
     if (!Array.isArray(recipeIds)) return [];
@@ -27,8 +28,21 @@
       recipeIds,
       activeRecipeId: recipeIds.includes(requestedActiveId)
         ? requestedActiveId
-        : (recipeIds[0] || null)
+        : (recipeIds[0] || null),
+      view: VALID_VIEWS.has(workspace.view) ? workspace.view : 'recipes',
+      checkedIngredientIds: uniqueChecklistIds(workspace.checkedIngredientIds),
+      checkedStepIds: uniqueChecklistIds(workspace.checkedStepIds),
+      planCacheKey: typeof workspace.planCacheKey === 'string'
+        ? workspace.planCacheKey.slice(0, 256)
+        : null
     };
+  }
+
+  function uniqueChecklistIds(values) {
+    if (!Array.isArray(values)) return [];
+    return [...new Set(
+      values.filter(value => typeof value === 'string' && value.trim())
+    )].slice(0, 500);
   }
 
   function addRecipe(workspace, recipeId) {
@@ -40,6 +54,7 @@
     if (normalized.recipeIds.length >= MAX_RECIPES) return normalized;
 
     return {
+      ...normalized,
       recipeIds: [...normalized.recipeIds, recipeId],
       activeRecipeId: normalized.activeRecipeId || recipeId
     };
@@ -51,11 +66,12 @@
     const recipeIds = normalized.recipeIds.filter(id => id !== recipeId);
 
     if (normalized.activeRecipeId !== recipeId) {
-      return { recipeIds, activeRecipeId: normalized.activeRecipeId };
+      return { ...normalized, recipeIds, activeRecipeId: normalized.activeRecipeId };
     }
 
     const fallbackIndex = Math.min(Math.max(removedIndex, 0), recipeIds.length - 1);
     return {
+      ...normalized,
       recipeIds,
       activeRecipeId: recipeIds[fallbackIndex] || null
     };
@@ -67,11 +83,29 @@
     return { ...normalized, activeRecipeId: recipeId };
   }
 
+  function selectView(workspace, view) {
+    const normalized = normalizeWorkspace(workspace);
+    if (!VALID_VIEWS.has(view)) return normalized;
+    return { ...normalized, view };
+  }
+
+  function toggleChecklistItem(workspace, kind, itemId) {
+    const normalized = normalizeWorkspace(workspace);
+    const field = kind === 'step' ? 'checkedStepIds' : 'checkedIngredientIds';
+    if (typeof itemId !== 'string' || !itemId.trim()) return normalized;
+    const current = new Set(normalized[field]);
+    if (current.has(itemId)) current.delete(itemId);
+    else current.add(itemId);
+    return { ...normalized, [field]: [...current].slice(0, 500) };
+  }
+
   global.CookingWorkspaceCore = Object.freeze({
     MAX_RECIPES,
     normalizeWorkspace,
     addRecipe,
     removeRecipe,
-    selectRecipe
+    selectRecipe,
+    selectView,
+    toggleChecklistItem
   });
 })(globalThis);

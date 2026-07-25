@@ -13,10 +13,21 @@
     "IMAGE_PUBLIC_BASE": "https://platen-0.github.io/vibe-cookbook/",
     "OPENAI_MODEL": "gpt-5.6-terra"
   },
+  "kv_namespaces": [
+    {
+      "binding": "RECIPE_IMAGES",
+      "id": "bb048ff0ed9b4e039783b673b5e9319b"
+    },
+    {
+      "binding": "RECIPE_INTELLIGENCE",
+      "id": "7bcc238db5fa44f188399a458d8a0d43"
+    }
+  ],
   "secrets": {
     "required": [
       "OPENAI_API_KEY",
-      "GITHUB_TOKEN"
+      "GITHUB_TOKEN",
+      "IMAGE_SIGNING_SECRET"
     ]
   }
 }

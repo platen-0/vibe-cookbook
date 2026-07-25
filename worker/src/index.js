@@ -38,7 +38,10 @@ export default {
             ok: true,
             service: 'vibe-cookbook-importer',
             openaiConfigured: Boolean(env.OPENAI_API_KEY),
-            imageStorageConfigured: Boolean(env.GITHUB_TOKEN)
+            imageStorageConfigured: Boolean(env.RECIPE_IMAGES || env.GITHUB_TOKEN),
+            privateImageStorageConfigured: Boolean(
+              env.RECIPE_IMAGES && env.IMAGE_SIGNING_SECRET
+            )
           },
           200,
           corsHeaders
@@ -49,7 +52,11 @@ export default {
         throw new HttpError(403, 'Origin is not allowed');
       }
 
-      const user = await authorizeEditor(request, env);
+      if (request.method === 'GET' && url.pathname.startsWith('/private-images/')) {
+        return servePrivateImage(request, env, corsHeaders);
+      }
+
+      const user = await authorizeUser(request, env);
       enforceRateLimit(user.sub);
 
       if (request.method === 'POST' && url.pathname === '/extract') {
@@ -64,10 +71,28 @@ export default {
         return jsonResponse(analysis, 200, corsHeaders);
       }
 
+      if (request.method === 'POST' && url.pathname === '/translate') {
+        const body = await readJsonBody(request);
+        const translation = await translateRecipe(body, user, env);
+        return jsonResponse(translation, 200, corsHeaders);
+      }
+
+      if (request.method === 'POST' && url.pathname === '/cooking-plan') {
+        const body = await readJsonBody(request);
+        const plan = await createCookingPlan(body, user, env);
+        return jsonResponse(plan, 200, corsHeaders);
+      }
+
       if (request.method === 'POST' && url.pathname === '/images') {
         const body = await readJsonBody(request);
-        const image = await storeRecipeImage(body, env);
+        const image = await storeRecipeImage(body, user, env, url.origin);
         return jsonResponse(image, 200, corsHeaders);
+      }
+
+      if (request.method === 'POST' && url.pathname === '/private-images/sign') {
+        const body = await readJsonBody(request);
+        const signed = await signPrivateImages(body, user, env, url.origin);
+        return jsonResponse(signed, 200, corsHeaders);
       }
 
       throw new HttpError(404, 'Not found');
@@ -180,6 +205,314 @@ export async function extractRecipeDraft(input, user, env) {
       screenshots.length === 0,
     warning: ''
   };
+}
+
+export async function translateRecipe(input, user, env) {
+  if (!env.OPENAI_API_KEY) throw new HttpError(503, 'OpenAI is not configured');
+  const recipeId = normalizeOptionalString(input.recipeId, 128);
+  const title = normalizeOptionalString(input.title, 180);
+  const text = normalizeOptionalString(input.text, 30_000);
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(recipeId) || (!title && !text)) {
+    throw new HttpError(400, 'Invalid recipe translation request');
+  }
+  await verifyFirestoreRecipeAccess(recipeId, user.token, env);
+  const cacheKey = `translation/en/${await contentHash(`${recipeId}\n${title}\n${text}`)}`;
+  const cached = env.RECIPE_INTELLIGENCE
+    ? await env.RECIPE_INTELLIGENCE.get(cacheKey, { type: 'json' })
+    : null;
+  if (cached) return { ...cached, cached: true };
+
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      title: { type: 'string' },
+      text: { type: 'string' }
+    },
+    required: ['title', 'text']
+  };
+  const translated = await requestStructuredOutput({
+    env,
+    user,
+    schema,
+    schemaName: 'cookbook_recipe_translation',
+    maxOutputTokens: 5_000,
+    system:
+      'You are a precise culinary translator. Preserve every quantity, unit, temperature, time, section, and step. Do not add, omit, or reinterpret recipe information.',
+    prompt: [
+      'Translate this recipe into natural English.',
+      'Preserve the original formatting and section order.',
+      'Do not convert measurements or temperatures.',
+      JSON.stringify({ title, text })
+    ].join('\n\n')
+  });
+  const result = {
+    title: normalizeOptionalString(translated.title, 220) || title,
+    text: normalizeOptionalString(translated.text, 35_000),
+    targetLanguage: 'en'
+  };
+  if (env.RECIPE_INTELLIGENCE) {
+    await env.RECIPE_INTELLIGENCE.put(cacheKey, JSON.stringify(result), {
+      expirationTtl: 60 * 60 * 24 * 365
+    });
+  }
+  return { ...result, cached: false };
+}
+
+export async function createCookingPlan(input, user, env) {
+  if (!env.OPENAI_API_KEY) throw new HttpError(503, 'OpenAI is not configured');
+  const supplied = Array.isArray(input.recipes) ? input.recipes.slice(0, 12) : [];
+  const recipes = supplied.map(recipe => ({
+    id: normalizeOptionalString(recipe.id, 128),
+    name: normalizeOptionalString(recipe.name, 180),
+    text: normalizeOptionalString(recipe.text, 30_000)
+  })).filter(recipe => /^[A-Za-z0-9_-]{1,128}$/.test(recipe.id) && recipe.text);
+  if (!recipes.length) throw new HttpError(400, 'No recipe text supplied');
+  const totalChars = recipes.reduce((sum, recipe) => sum + recipe.text.length, 0);
+  if (totalChars > 100_000) throw new HttpError(413, 'The selected recipes are too long');
+  await Promise.all(
+    recipes.map(recipe => verifyFirestoreRecipeAccess(recipe.id, user.token, env))
+  );
+
+  const cacheKey = `cooking-plan/v1/${await contentHash(JSON.stringify(recipes))}`;
+  const cached = env.RECIPE_INTELLIGENCE
+    ? await env.RECIPE_INTELLIGENCE.get(cacheKey, { type: 'json' })
+    : null;
+  if (cached) return { ...cached, cached: true, cacheKey };
+
+  const schema = buildCookingPlanSchema();
+  const modelPlan = await requestStructuredOutput({
+    env,
+    user,
+    schema,
+    schemaName: 'cookbook_live_cooking_plan',
+    maxOutputTokens: 9_000,
+    system:
+      'You organize concurrent cooking accurately. Never invent quantities, times, temperatures, or missing steps. Preserve uncertainty instead of guessing.',
+    prompt: [
+      'Read every selected recipe completely.',
+      'Extract ingredient lines and actionable instructions for each recipe.',
+      'Combine ingredients only when they are unambiguously the same ingredient and their written quantities/units can be safely represented together.',
+      'When quantities or units are incompatible, keep separate combined entries and explain briefly.',
+      'Build a practical one-cook timeline. Preserve recipe step order. Active work should not overlap; passive waiting or baking may overlap.',
+      'Use startsAfterMinutes only when explicit durations make it supportable. Use 0 and add a note when timing is unknown.',
+      'ingredientIndex and stepIndex are zero-based positions within the extracted arrays for that recipe.',
+      JSON.stringify({ recipes })
+    ].join('\n\n')
+  });
+  const result = normalizeCookingPlan(modelPlan, recipes);
+  if (env.RECIPE_INTELLIGENCE) {
+    await env.RECIPE_INTELLIGENCE.put(cacheKey, JSON.stringify(result), {
+      expirationTtl: 60 * 60 * 24 * 180
+    });
+  }
+  return { ...result, cached: false, cacheKey };
+}
+
+export function buildCookingPlanSchema() {
+  const sourceSchema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      recipeId: { type: 'string' },
+      ingredientIndex: { type: 'integer', minimum: 0 }
+    },
+    required: ['recipeId', 'ingredientIndex']
+  };
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      recipes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            recipeId: { type: 'string' },
+            ingredients: { type: 'array', items: { type: 'string' } },
+            steps: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  text: { type: 'string' },
+                  durationMinutes: { type: 'number', minimum: 0 },
+                  active: { type: 'boolean' }
+                },
+                required: ['text', 'durationMinutes', 'active']
+              }
+            }
+          },
+          required: ['recipeId', 'ingredients', 'steps']
+        }
+      },
+      combinedIngredients: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            display: { type: 'string' },
+            normalizedName: { type: 'string' },
+            sources: { type: 'array', items: sourceSchema },
+            note: { type: 'string' }
+          },
+          required: ['display', 'normalizedName', 'sources', 'note']
+        }
+      },
+      timeline: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            recipeId: { type: 'string' },
+            stepIndex: { type: 'integer', minimum: 0 },
+            startsAfterMinutes: { type: 'number', minimum: 0 },
+            durationMinutes: { type: 'number', minimum: 0 },
+            active: { type: 'boolean' },
+            note: { type: 'string' }
+          },
+          required: [
+            'recipeId',
+            'stepIndex',
+            'startsAfterMinutes',
+            'durationMinutes',
+            'active',
+            'note'
+          ]
+        }
+      },
+      warnings: { type: 'array', items: { type: 'string' } }
+    },
+    required: ['recipes', 'combinedIngredients', 'timeline', 'warnings']
+  };
+}
+
+function normalizeCookingPlan(plan, sourceRecipes) {
+  const allowedIds = new Set(sourceRecipes.map(recipe => recipe.id));
+  const sourceNames = Object.fromEntries(sourceRecipes.map(recipe => [recipe.id, recipe.name]));
+  const recipes = (Array.isArray(plan.recipes) ? plan.recipes : [])
+    .filter(recipe => allowedIds.has(recipe.recipeId))
+    .map(recipe => ({
+      recipeId: recipe.recipeId,
+      name: sourceNames[recipe.recipeId] || '',
+      ingredients: normalizeStringArray(recipe.ingredients, 160, 600).map(
+        (text, index) => ({
+          id: `ingredient-${recipe.recipeId}-${index}`,
+          text
+        })
+      ),
+      steps: (Array.isArray(recipe.steps) ? recipe.steps : []).slice(0, 100).map(
+        (step, index) => ({
+          id: `step-${recipe.recipeId}-${index}`,
+          text: normalizeOptionalString(step.text, 1_200),
+          durationMinutes: clampNumber(step.durationMinutes, 0, 1_440),
+          active: step.active === true
+        })
+      ).filter(step => step.text)
+    }));
+  const recipeMap = new Map(recipes.map(recipe => [recipe.recipeId, recipe]));
+  const combinedIngredients = (Array.isArray(plan.combinedIngredients)
+    ? plan.combinedIngredients
+    : [])
+    .slice(0, 250)
+    .map((item, index) => ({
+      id: `combined-${index}`,
+      display: normalizeOptionalString(item.display, 700),
+      normalizedName: normalizeOptionalString(item.normalizedName, 240),
+      sourceIds: (Array.isArray(item.sources) ? item.sources : [])
+        .map(source => {
+          const ingredient = recipeMap.get(source.recipeId)?.ingredients?.[source.ingredientIndex];
+          return ingredient?.id || '';
+        })
+        .filter(Boolean),
+      sourceRecipeIds: [...new Set(
+        (Array.isArray(item.sources) ? item.sources : [])
+          .map(source => source.recipeId)
+          .filter(id => allowedIds.has(id))
+      )],
+      note: normalizeOptionalString(item.note, 500)
+    }))
+    .filter(item => item.display && item.sourceIds.length);
+  const timeline = (Array.isArray(plan.timeline) ? plan.timeline : [])
+    .slice(0, 300)
+    .map((item, index) => {
+      const step = recipeMap.get(item.recipeId)?.steps?.[item.stepIndex];
+      if (!step) return null;
+      return {
+        id: `timeline-${index}-${step.id}`,
+        recipeId: item.recipeId,
+        recipeName: sourceNames[item.recipeId] || '',
+        stepId: step.id,
+        text: step.text,
+        startsAfterMinutes: clampNumber(item.startsAfterMinutes, 0, 2_880),
+        durationMinutes: clampNumber(item.durationMinutes, 0, 1_440),
+        active: item.active === true,
+        note: normalizeOptionalString(item.note, 500)
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.startsAfterMinutes - right.startsAfterMinutes);
+  return {
+    recipes,
+    combinedIngredients,
+    timeline,
+    warnings: normalizeStringArray(plan.warnings, 30, 700)
+  };
+}
+
+async function requestStructuredOutput({
+  env,
+  user,
+  schema,
+  schemaName,
+  maxOutputTokens,
+  system,
+  prompt
+}) {
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: env.OPENAI_MODEL || 'gpt-5.6-terra',
+      store: false,
+      safety_identifier: await privacySafeIdentifier(user.sub),
+      reasoning: { effort: 'medium' },
+      max_output_tokens: maxOutputTokens,
+      input: [
+        { role: 'system', content: system },
+        { role: 'user', content: prompt }
+      ],
+      text: {
+        format: {
+          type: 'json_schema',
+          name: schemaName,
+          strict: true,
+          schema
+        }
+      }
+    })
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    console.error('OpenAI structured output error', response.status, payload?.error?.code);
+    throw new HttpError(502, 'OpenAI could not prepare this result');
+  }
+  const outputText = findResponseOutputText(payload);
+  if (!outputText) {
+    throw new HttpError(422, findResponseRefusal(payload) || 'OpenAI returned no result');
+  }
+  try {
+    return JSON.parse(outputText);
+  } catch {
+    throw new HttpError(502, 'OpenAI returned an unreadable result');
+  }
 }
 
 async function requestOpenAiDraft({
@@ -484,11 +817,7 @@ export function buildImageRecipeSchema(categoryIds, tagIds) {
   };
 }
 
-export async function storeRecipeImage(input, env) {
-  if (!env.GITHUB_TOKEN) {
-    throw new HttpError(503, 'GitHub image storage is not configured');
-  }
-
+export async function storeRecipeImage(input, user, env, workerOrigin = '') {
   const recipeId = normalizeOptionalString(input.recipeId, 128);
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(recipeId)) {
     throw new HttpError(400, 'Invalid recipe ID');
@@ -508,6 +837,37 @@ export async function storeRecipeImage(input, env) {
   }
 
   const extension = extensionForMime(image.mime);
+
+  if (input.private === true) {
+    if (!env.RECIPE_IMAGES || !env.IMAGE_SIGNING_SECRET) {
+      throw new HttpError(503, 'Private image storage is not configured');
+    }
+    const privateKey = `recipes/${user.sub}/${recipeId}.${extension}`;
+    await env.RECIPE_IMAGES.put(privateKey, image.bytes, {
+      metadata: {
+        mime: image.mime,
+        ownerUid: user.sub,
+        recipeId
+      }
+    });
+    const signedUrl = await createSignedImageUrl(
+      privateKey,
+      env,
+      workerOrigin,
+      Math.floor(Date.now() / 1_000) + 3_600
+    );
+    return {
+      privateKey,
+      protected: true,
+      url: signedUrl,
+      bytes: image.bytes.byteLength
+    };
+  }
+
+  if (!env.GITHUB_TOKEN) {
+    throw new HttpError(503, 'GitHub image storage is not configured');
+  }
+
   const path = `images/recipes/${recipeId}.${extension}`;
   const repository = env.GITHUB_REPOSITORY || 'platen-0/vibe-cookbook';
   const branch = env.GITHUB_BRANCH || 'main';
@@ -537,6 +897,133 @@ export async function storeRecipeImage(input, env) {
     url: `${publicBase}${path}?v=${version}`,
     bytes: image.bytes.byteLength
   };
+}
+
+export async function signPrivateImages(input, user, env, workerOrigin = '') {
+  if (!env.RECIPE_IMAGES || !env.IMAGE_SIGNING_SECRET) {
+    throw new HttpError(503, 'Private image storage is not configured');
+  }
+  const images = Array.isArray(input.images) ? input.images.slice(0, 50) : [];
+  if (!images.length) throw new HttpError(400, 'No private images supplied');
+
+  const normalized = images.map(item => ({
+    recipeId: normalizeOptionalString(item.recipeId, 128),
+    key: normalizeOptionalString(item.key, 500)
+  }));
+  for (const image of normalized) {
+    if (
+      !/^[A-Za-z0-9_-]{8,128}$/.test(image.recipeId) ||
+      !/^recipes\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]{8,128}\.(?:jpg|png|webp)$/.test(image.key)
+    ) {
+      throw new HttpError(400, 'Invalid private image reference');
+    }
+  }
+
+  const uniqueRecipeIds = [...new Set(normalized.map(image => image.recipeId))];
+  await Promise.all(
+    uniqueRecipeIds.map(recipeId =>
+      verifyFirestoreRecipeAccess(recipeId, user.token, env)
+    )
+  );
+
+  const expires = Math.floor(Date.now() / 1_000) + 3_600;
+  const urls = {};
+  for (const image of normalized) {
+    const stored = await env.RECIPE_IMAGES.head(image.key);
+    if (!stored) continue;
+    urls[image.key] = await createSignedImageUrl(
+      image.key,
+      env,
+      workerOrigin,
+      expires
+    );
+  }
+  return { urls, expires };
+}
+
+async function verifyFirestoreRecipeAccess(recipeId, token, env) {
+  const projectId = env.FIREBASE_PROJECT_ID || 'vibe-cookbook';
+  const url =
+    `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}` +
+    `/databases/(default)/documents/recipes/${encodeURIComponent(recipeId)}`;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (response.status === 403 || response.status === 404) {
+    throw new HttpError(403, 'Private image access was denied');
+  }
+  if (!response.ok) throw new HttpError(503, 'Could not verify private image access');
+}
+
+async function createSignedImageUrl(key, env, workerOrigin, expires) {
+  const signature = await signImageValue(`${key}|${expires}`, env.IMAGE_SIGNING_SECRET);
+  const origin = workerOrigin || `https://${env.WORKER_PUBLIC_HOST || 'localhost'}`;
+  return `${origin}/private-images/${encodeURIComponent(key)}?expires=${expires}&signature=${signature}`;
+}
+
+async function servePrivateImage(request, env, corsHeaders) {
+  if (!env.RECIPE_IMAGES || !env.IMAGE_SIGNING_SECRET) {
+    throw new HttpError(503, 'Private image storage is not configured');
+  }
+  const url = new URL(request.url);
+  const encodedKey = url.pathname.slice('/private-images/'.length);
+  let key;
+  try {
+    key = decodeURIComponent(encodedKey);
+  } catch (error) {
+    throw new HttpError(400, 'Invalid private image URL');
+  }
+  const expires = Number(url.searchParams.get('expires'));
+  const signature = url.searchParams.get('signature') || '';
+  if (!Number.isFinite(expires) || expires < Math.floor(Date.now() / 1_000)) {
+    throw new HttpError(403, 'Private image link expired');
+  }
+  const expected = await signImageValue(`${key}|${expires}`, env.IMAGE_SIGNING_SECRET);
+  if (!timingSafeEqual(signature, expected)) {
+    throw new HttpError(403, 'Invalid private image signature');
+  }
+  const stored = await env.RECIPE_IMAGES.getWithMetadata(key, { type: 'arrayBuffer' });
+  if (!stored.value) throw new HttpError(404, 'Private image not found');
+  return new Response(stored.value, {
+    status: 200,
+    headers: {
+      ...corsHeaders,
+      'Content-Type': stored.metadata?.mime || 'application/octet-stream',
+      'Cache-Control': 'private, max-age=3300',
+      'X-Content-Type-Options': 'nosniff'
+    }
+  });
+}
+
+async function signImageValue(value, secret) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(value)
+  );
+  return bytesToBase64Url(new Uint8Array(signature));
+}
+
+function bytesToBase64Url(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function timingSafeEqual(left, right) {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
 }
 
 async function githubRequest(url, env, options) {
@@ -1050,21 +1537,13 @@ function decodeHtml(value) {
     .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)));
 }
 
-async function authorizeEditor(request, env) {
+async function authorizeUser(request, env) {
   const authorization = request.headers.get('Authorization') || '';
   if (!authorization.startsWith('Bearer ')) throw new HttpError(401, 'Sign in to import recipes');
   const token = authorization.slice(7);
   const claims = await verifyFirebaseToken(token, env.FIREBASE_PROJECT_ID || 'vibe-cookbook');
-  const editors = new Set(
-    (env.AUTHORIZED_EMAILS || DEFAULT_EDITORS.join(','))
-      .split(',')
-      .map((email) => email.trim().toLowerCase())
-      .filter(Boolean)
-  );
-  if (!claims.email || !editors.has(claims.email.toLowerCase())) {
-    throw new HttpError(403, 'This account cannot import recipes');
-  }
-  return claims;
+  if (!claims.email) throw new HttpError(403, 'A verified Google email is required');
+  return { ...claims, token };
 }
 
 async function verifyFirebaseToken(token, projectId) {
@@ -1333,6 +1812,16 @@ async function privacySafeIdentifier(value) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest))
     .slice(0, 16)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function contentHash(value) {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(String(value || ''))
+  );
+  return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
 }

@@ -24,7 +24,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
   <!-- Firebase Storage removed - requires paid plan -->
 
-  <link rel="stylesheet" href="styles.css?v=15858ccc">
+  <link rel="stylesheet" href="styles.css?v=36660287">
 </head>
 <body>
   <div class="app-container">
@@ -62,6 +62,21 @@
         </div>
       </div>
     </header>
+
+    <!-- Personal library scopes (Cookbook v2) -->
+    <section class="library-toolbar" id="library-toolbar" aria-label="בחירת ספרייה" hidden>
+      <div class="library-switcher" role="group" aria-label="הצגת מתכונים">
+        <button type="button" class="library-scope active" data-library-scope="all" aria-pressed="true">הכול</button>
+        <button type="button" class="library-scope" data-library-scope="mine" aria-pressed="false">המטבח שלי</button>
+        <button type="button" class="library-scope" data-library-scope="shared" aria-pressed="false">שותף איתי</button>
+      </div>
+      <label class="kitchen-picker" for="library-kitchen-select">
+        <span>מטבח</span>
+        <select id="library-kitchen-select" aria-label="בחירת מטבח משותף">
+          <option value="">כל המטבחים</option>
+        </select>
+      </label>
+    </section>
 
     <!-- Categories Navigation -->
     <nav class="categories-nav" id="categories-nav">
@@ -437,7 +452,8 @@
         <button class="modal-close" id="auth-modal-close">&times;</button>
         <div class="modal-body">
           <div id="auth-signed-out">
-            <h2 class="modal-title">👤 התחברות</h2>
+            <span class="account-eyebrow">הספר האישי שלך</span>
+            <h2 class="modal-title">התחברות</h2>
             <p class="modal-subtitle">התחברי עם חשבון Google כדי להוסיף ולערוך מתכונים</p>
             <button class="google-signin-btn" id="google-signin-btn">
               <svg viewBox="0 0 24 24" width="24" height="24">
@@ -450,17 +466,192 @@
             </button>
           </div>
           <div id="auth-signed-in" style="display: none;">
-            <h2 class="modal-title">👋 שלום!</h2>
-            <div class="auth-user-info">
-              <img id="auth-user-photo" src="" alt="User photo" class="auth-user-photo">
+            <div class="account-heading">
+              <div>
+                <span class="account-eyebrow">אזור אישי</span>
+                <h2 class="modal-title" id="account-greeting">שלום</h2>
+              </div>
+              <img id="auth-user-photo" src="" alt="" class="auth-user-photo">
+            </div>
+            <div class="auth-user-info account-identity-card">
               <div class="auth-user-details">
                 <div id="auth-user-name" class="auth-user-name"></div>
                 <div id="auth-user-email" class="auth-user-email"></div>
+                <div id="auth-username" class="auth-username"></div>
               </div>
+              <button type="button" class="account-text-action" id="edit-profile-btn">עריכת פרופיל</button>
             </div>
             <div id="auth-permission-status" class="auth-permission-status"></div>
-            <button class="btn btn-secondary" id="signout-btn" style="margin-top: 20px;">התנתק</button>
+
+            <section class="account-section" id="account-kitchens-section">
+              <div class="account-section-heading">
+                <div>
+                  <h3>המטבחים שלי</h3>
+                  <p>ספר אישי ומטבחים שמשתפים איתך.</p>
+                </div>
+                <button type="button" class="account-icon-action" id="create-kitchen-btn" aria-label="יצירת מטבח חדש">+</button>
+              </div>
+              <div class="account-kitchen-list" id="account-kitchen-list"></div>
+            </section>
+
+            <section class="account-section" id="account-invitations-section" hidden>
+              <div class="account-section-heading">
+                <div>
+                  <h3>הזמנות שמחכות לך</h3>
+                  <p>אפשר להצטרף או לדחות.</p>
+                </div>
+              </div>
+              <div class="account-invitation-list" id="account-invitation-list"></div>
+            </section>
+
+            <button class="btn btn-secondary account-signout" id="signout-btn">התנתקות</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Required profile onboarding -->
+    <div class="modal onboarding-modal" id="onboarding-modal" aria-labelledby="onboarding-title">
+      <div class="modal-content onboarding-modal-content">
+        <div class="onboarding-cover" aria-hidden="true">
+          <span>מטבח אישי</span>
+          <svg viewBox="0 0 120 72">
+            <path d="M18 48h84M28 48v-6c0-14 12-26 32-26s32 12 32 26v6M14 48v4c0 8 7 14 15 14h62c8 0 15-6 15-14v-4M60 16V8"/>
+          </svg>
+        </div>
+        <div class="modal-body">
+          <span class="account-eyebrow">עוד רגע הספר שלך מוכן</span>
+          <h2 class="modal-title" id="onboarding-title">איך נכיר אותך במטבח?</h2>
+          <p class="modal-subtitle">הפרטים האלה משמשים להזמנות ולייחוס מתכונים. כתובת ה‑Gmail שלך נשארת מחוץ לפרופיל הציבורי.</p>
+          <form id="onboarding-form">
+            <div class="form-group">
+              <label for="onboarding-first-name">שם פרטי</label>
+              <input type="text" id="onboarding-first-name" maxlength="30" autocomplete="given-name" placeholder="למשל טל">
+              <p class="field-hint">יופיע ליד מתכונים שתוסיפי למטבח משותף או ציבורי.</p>
+              <span class="field-error" id="onboarding-first-name-error"></span>
+            </div>
+            <div class="form-group">
+              <label for="onboarding-username">שם משתמש ייחודי</label>
+              <div class="username-input-wrap" dir="ltr">
+                <span>@</span>
+                <input type="text" id="onboarding-username" maxlength="24" autocomplete="username" placeholder="tal">
+              </div>
+              <p class="field-hint">אפשר להזמין אותך באמצעות שם המשתמש או כתובת האימייל.</p>
+              <span class="field-error" id="onboarding-username-error"></span>
+            </div>
+            <div class="onboarding-actions">
+              <button type="button" class="account-text-action" id="onboarding-signout">התנתקות</button>
+              <button type="submit" class="btn btn-primary" id="onboarding-submit">
+                <span class="btn-text">יצירת המטבח שלי</span>
+                <span class="btn-loading" hidden>שומרת…</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create a shared kitchen -->
+    <div class="modal" id="create-kitchen-modal" aria-labelledby="create-kitchen-title">
+      <div class="modal-content compact-modal-content">
+        <button class="modal-close" id="create-kitchen-close">&times;</button>
+        <div class="modal-body">
+          <span class="account-eyebrow">מקום לבשל יחד</span>
+          <h2 class="modal-title" id="create-kitchen-title">מטבח משותף חדש</h2>
+          <p class="modal-subtitle">אפשר להזמין חברות ומשפחה ולשתף לתוכו מתכונים בלי לוותר על הבעלות האישית.</p>
+          <form id="create-kitchen-form">
+            <div class="form-group">
+              <label for="create-kitchen-name">שם המטבח</label>
+              <input type="text" id="create-kitchen-name" maxlength="50" placeholder="למשל: שרייבר">
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn btn-secondary" id="create-kitchen-cancel">ביטול</button>
+              <button type="submit" class="btn btn-primary">יצירת מטבח</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Invite to a kitchen -->
+    <div class="modal" id="invite-kitchen-modal" aria-labelledby="invite-kitchen-title">
+      <div class="modal-content compact-modal-content">
+        <button class="modal-close" id="invite-kitchen-close">&times;</button>
+        <div class="modal-body">
+          <span class="account-eyebrow">הזמנה למטבח</span>
+          <h2 class="modal-title" id="invite-kitchen-title">מזמינים לבשל יחד</h2>
+          <p class="modal-subtitle" id="invite-kitchen-description"></p>
+          <form id="invite-kitchen-form">
+            <input type="hidden" id="invite-kitchen-id">
+            <div class="form-group">
+              <label for="invite-kitchen-recipient">שם משתמש או אימייל</label>
+              <input type="text" id="invite-kitchen-recipient" dir="ltr" autocomplete="off" placeholder="@username או name@gmail.com">
+            </div>
+            <div class="form-group">
+              <label for="invite-kitchen-role">תפקיד</label>
+              <select id="invite-kitchen-role">
+                <option value="member">חבר/ה — הוספה וניהול של מתכונים אישיים</option>
+                <option value="admin">מנהל/ת — ניהול חברים וכל מתכוני המטבח</option>
+              </select>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn btn-secondary" id="invite-kitchen-cancel">ביטול</button>
+              <button type="submit" class="btn btn-primary">שליחת הזמנה</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Share recipes -->
+    <div class="modal" id="share-recipe-modal" aria-labelledby="share-recipe-title">
+      <div class="modal-content share-modal-content">
+        <button class="modal-close" id="share-recipe-close">&times;</button>
+        <div class="modal-body">
+          <span class="account-eyebrow">שיתוף בשליטה שלך</span>
+          <h2 class="modal-title" id="share-recipe-title">שיתוף מתכונים</h2>
+          <p class="modal-subtitle">המתכון נשאר בבעלותך. אפשר לבטל את השיתוף בהמשך.</p>
+          <form id="share-recipe-form">
+            <input type="hidden" id="share-source-recipe-id">
+            <div class="form-group">
+              <label for="share-target">עם מי?</label>
+              <input type="text" id="share-target" dir="ltr" autocomplete="off" placeholder="@username, email או שם מטבח">
+              <p class="field-hint">שם משתמש ואימייל דורשים התאמה מדויקת.</p>
+            </div>
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="share-scope-type">מה לשתף?</label>
+                <select id="share-scope-type">
+                  <option value="recipe">רק את המתכון הזה</option>
+                  <option value="category">קטגוריה</option>
+                  <option value="tag">תגית</option>
+                  <option value="all">כל המתכונים שלי</option>
+                </select>
+              </div>
+              <div class="form-group" id="share-scope-value-group" hidden>
+                <label for="share-scope-value">בחירה</label>
+                <select id="share-scope-value"></select>
+              </div>
+            </div>
+            <label class="editorial-check">
+              <input type="checkbox" id="share-allow-copy" checked>
+              <span>
+                <strong>אפשר ליצור עותק אישי</strong>
+                <small>העותק יסומן עם שם המשתמש שלך כמקור.</small>
+              </span>
+            </label>
+            <label class="editorial-check" id="share-future-wrap" hidden>
+              <input type="checkbox" id="share-include-future">
+              <span>
+                <strong>לכלול גם מתכונים עתידיים שמתאימים</strong>
+                <small>כבוי כברירת מחדל.</small>
+              </span>
+            </label>
+            <div class="form-actions">
+              <button type="button" class="btn btn-secondary" id="share-recipe-cancel">ביטול</button>
+              <button type="submit" class="btn btn-primary">שיתוף</button>
+            </div>
+          </form>
         </div>
       </div>
     </div>
@@ -494,6 +685,17 @@
                 <span class="theme-palette theme-palette-auto" aria-hidden="true"></span>
               </button>
             </div>
+          </div>
+
+          <div class="settings-section">
+            <h3 id="language-setting-title">שפה</h3>
+            <div class="language-toggle" role="group" aria-label="בחירת שפה">
+              <button type="button" class="language-btn active" data-language="he" aria-pressed="true">עברית</button>
+              <button type="button" class="language-btn" data-language="en" aria-pressed="false">English</button>
+            </div>
+            <p class="settings-note language-setting-note" id="language-setting-note">
+              באנגלית, טקסט המתכון מתורגם במדויק כשפותחים אותו. כמויות, זמנים וטמפרטורות נשארים כפי שנכתבו.
+            </p>
           </div>
 
           <div class="settings-section">
@@ -559,6 +761,12 @@
         </div>
       </div>
 
+      <div class="cooking-view-switcher" id="cooking-view-switcher" role="group" aria-label="תצוגת בישול">
+        <button type="button" class="active" data-cooking-view="recipes" aria-pressed="true">מתכונים</button>
+        <button type="button" data-cooking-view="ingredients" aria-pressed="false">רשימת מרכיבים</button>
+        <button type="button" data-cooking-view="timeline" aria-pressed="false">ציר בישול</button>
+      </div>
+
       <nav class="cooking-recipe-rail" id="cooking-recipe-rail" aria-label="המתכונים שבמטבח"></nav>
       <main class="cooking-stage" id="cooking-stage" tabindex="-1"></main>
     </section>
@@ -573,8 +781,9 @@
     <div class="toast-container" id="toast-container"></div>
   </div>
 
-  <script src="import-config.js?v=65bf8a87"></script>
-  <script src="cooking-workspace-core.js?v=2f597c9e"></script>
-  <script src="app.js?v=e37f6dbd"></script>
+  <script src="import-config.js?v=dc2de91e"></script>
+  <script src="cooking-workspace-core.js?v=0ae85342"></script>
+  <script src="cookbook-v2-core.js?v=f5d91b80"></script>
+  <script src="app.js?v=8db831d1"></script>
 </body>
 </html>

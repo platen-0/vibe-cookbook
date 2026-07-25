@@ -2,9 +2,12 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Allowed editor emails
+    function signedIn() {
+      return request.auth != null;
+    }
+
     function isAllowedEditor() {
-      return request.auth != null &&
+      return signedIn() &&
              request.auth.token.email in [
                'taladani@gmail.com',
                'eliavschreiber@gmail.com',
@@ -14,28 +17,304 @@ service cloud.firestore {
              ];
     }
 
-    match /recipes/{recipeId} {
-      // Anyone can read recipes
-      allow read: if true;
-
-      // Only allowed users can create, update, or delete recipes
-      allow create, update, delete: if isAllowedEditor();
+    function profileComplete() {
+      return signedIn() &&
+             getAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+               .data.onboardingComplete == true;
     }
 
-    // A private, lightweight list of recipe IDs for each signed-in cook.
+    function isKitchenMember(kitchenId) {
+      return signedIn() &&
+             request.auth.uid in
+               get(/databases/$(database)/documents/kitchens/$(kitchenId)).data.memberIds;
+    }
+
+    function kitchenRole(kitchenId) {
+      return get(/databases/$(database)/documents/kitchens/$(kitchenId))
+        .data.memberRoles[request.auth.uid];
+    }
+
+    function isKitchenAdmin(kitchenId) {
+      return isKitchenMember(kitchenId) &&
+             kitchenRole(kitchenId) in ['owner', 'admin'];
+    }
+
+    function hasRecipeAccess(recipeId) {
+      return signedIn() &&
+             exists(
+               /databases/$(database)/documents/users/$(request.auth.uid)/recipeAccess/$(recipeId)
+             ) &&
+             get(
+               /databases/$(database)/documents/users/$(request.auth.uid)/recipeAccess/$(recipeId)
+             ).data.active != false;
+    }
+
+    function ownsRecipeData(data) {
+      return signedIn() && data.ownerUid == request.auth.uid;
+    }
+
+    function canEditRecipeData(data) {
+      return ownsRecipeData(data) ||
+             (
+               signedIn() &&
+               data.editorUids is list &&
+               request.auth.uid in data.editorUids
+             );
+    }
+
+    match /recipes/{recipeId} {
+      // Legacy documents stay public until the audited ownership migration.
+      allow read: if !('ownerUid' in resource.data) ||
+                     resource.data.visibility == 'public' ||
+                     ownsRecipeData(resource.data) ||
+                     hasRecipeAccess(recipeId);
+
+      allow create: if (
+                      profileComplete() &&
+                      request.resource.data.ownerUid == request.auth.uid &&
+                      request.resource.data.visibility in ['private', 'public'] &&
+                      request.resource.data.tags is list
+                    ) ||
+                    (
+                      isAllowedEditor() &&
+                      !('ownerUid' in request.resource.data)
+                    );
+
+      allow update: if (
+                      ('ownerUid' in resource.data) &&
+                      canEditRecipeData(resource.data) &&
+                      request.resource.data.ownerUid == resource.data.ownerUid &&
+                      request.resource.data.homeKitchenId == resource.data.homeKitchenId &&
+                      request.resource.data.tags is list
+                    ) ||
+                    (
+                      !('ownerUid' in resource.data) &&
+                      isAllowedEditor()
+                    );
+
+      allow delete: if (
+                      ('ownerUid' in resource.data) &&
+                      canEditRecipeData(resource.data)
+                    ) ||
+                    (
+                      !('ownerUid' in resource.data) &&
+                      isAllowedEditor()
+                    );
+    }
+
+    match /users/{userId} {
+      allow get, create, update: if signedIn() && request.auth.uid == userId;
+      allow list, delete: if false;
+
+      match /favorites/{recipeId} {
+        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /recipeAccess/{recipeId} {
+        function recipeOwnerIsGranting() {
+          return signedIn() &&
+                 get(/databases/$(database)/documents/recipes/$(recipeId))
+                   .data.ownerUid == request.auth.uid;
+        }
+
+        function targetIsClaimingPolicy() {
+          let policyId = request.resource.data.primaryPolicyId;
+          let policy = get(
+            /databases/$(database)/documents/sharePolicies/$(policyId)
+          ).data;
+          return signedIn() &&
+                 request.auth.uid == userId &&
+                 policy.active == true &&
+                 (
+                   policy.targetUid == request.auth.uid ||
+                   (
+                     policy.targetEmail == request.auth.token.email &&
+                     policy.targetEmail != null
+                   )
+                 );
+        }
+
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create, update: if recipeOwnerIsGranting() || targetIsClaimingPolicy();
+        allow delete: if recipeOwnerIsGranting() ||
+                         (signedIn() && request.auth.uid == userId);
+      }
+    }
+
+    match /usernames/{username} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() &&
+                       request.resource.data.uid == request.auth.uid;
+      allow update: if signedIn() &&
+                       resource.data.uid == request.auth.uid &&
+                       request.resource.data.uid == request.auth.uid;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /emailDirectory/{emailHash} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() &&
+                       request.resource.data.uid == request.auth.uid;
+      allow update: if signedIn() &&
+                       resource.data.uid == request.auth.uid &&
+                       request.resource.data.uid == request.auth.uid;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /kitchens/{kitchenId} {
+      function validNewKitchen() {
+        return profileComplete() &&
+               request.resource.data.ownerUid == request.auth.uid &&
+               request.resource.data.memberIds == [request.auth.uid] &&
+               request.resource.data.memberRoles[request.auth.uid] == 'owner' &&
+               request.resource.data.type in ['personal', 'shared'];
+      }
+
+      function validInvitationJoin() {
+        let invitationId = request.resource.data.lastAcceptedInvitationId;
+        let invitationBefore = get(
+          /databases/$(database)/documents/invitations/$(invitationId)
+        ).data;
+        let invitationAfter = getAfter(
+          /databases/$(database)/documents/invitations/$(invitationId)
+        ).data;
+        return signedIn() &&
+               invitationBefore.status == 'pending' &&
+               invitationAfter.status == 'accepted' &&
+               invitationBefore.kitchenId == kitchenId &&
+               (
+                 invitationBefore.targetUid == request.auth.uid ||
+                 invitationBefore.targetEmail == request.auth.token.email
+               ) &&
+               !(request.auth.uid in resource.data.memberIds) &&
+               request.auth.uid in request.resource.data.memberIds &&
+               request.resource.data.memberIds.size() ==
+                 resource.data.memberIds.size() + 1 &&
+               request.resource.data.memberRoles[request.auth.uid] ==
+                 invitationBefore.role &&
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'memberIds',
+                 'memberRoles',
+                 'lastAcceptedInvitationId',
+                 'updatedAt'
+               ]);
+      }
+
+      allow get, list: if signedIn() && request.auth.uid in resource.data.memberIds;
+      allow create: if validNewKitchen();
+      allow update: if (
+                      isKitchenAdmin(kitchenId) &&
+                      request.resource.data.ownerUid == resource.data.ownerUid
+                    ) ||
+                    validInvitationJoin();
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    match /invitations/{invitationId} {
+      function isInvitationTarget(data) {
+        return signedIn() &&
+               (
+                 data.targetUid == request.auth.uid ||
+                 (
+                   data.targetEmail == request.auth.token.email &&
+                   data.targetEmail != null
+                 )
+               );
+      }
+
+      function inviterMayCreate() {
+        return signedIn() &&
+               request.resource.data.inviterUid == request.auth.uid &&
+               request.resource.data.status == 'pending' &&
+               (
+                 (
+                   request.resource.data.type == 'kitchen' &&
+                   isKitchenAdmin(request.resource.data.kitchenId)
+                 ) ||
+                 (
+                   request.resource.data.type == 'recipe-share' &&
+                   get(
+                     /databases/$(database)/documents/sharePolicies/$(request.resource.data.sharePolicyId)
+                   ).data.ownerUid == request.auth.uid
+                 )
+               );
+      }
+
+      allow get, list: if signedIn() &&
+                         (
+                           resource.data.inviterUid == request.auth.uid ||
+                           isInvitationTarget(resource.data)
+                         );
+      allow create: if inviterMayCreate();
+      allow update: if (
+                      isInvitationTarget(resource.data) &&
+                      resource.data.status == 'pending' &&
+                      request.resource.data.status in ['accepted', 'declined']
+                    ) ||
+                    (
+                      resource.data.inviterUid == request.auth.uid &&
+                      request.resource.data.status == 'cancelled'
+                    );
+      allow delete: if false;
+    }
+
+    match /sharePolicies/{policyId} {
+      allow get, list: if signedIn() &&
+                         (
+                           resource.data.ownerUid == request.auth.uid ||
+                           resource.data.targetUid == request.auth.uid ||
+                           (
+                             resource.data.targetEmail == request.auth.token.email &&
+                             resource.data.targetEmail != null
+                           ) ||
+                           (
+                             resource.data.targetType == 'kitchen' &&
+                             isKitchenMember(resource.data.targetId)
+                           )
+                         );
+      allow create: if profileComplete() &&
+                       request.resource.data.ownerUid == request.auth.uid &&
+                       request.resource.data.scopeType in ['recipe', 'category', 'tag', 'all'];
+      allow update, delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
     match /cookingWorkspaces/{userId} {
       function isWorkspaceOwner() {
-        return request.auth != null && request.auth.uid == userId;
+        return signedIn() && request.auth.uid == userId;
       }
 
       function isValidWorkspace() {
         return request.resource.data.keys().hasOnly([
                  'recipeIds',
                  'activeRecipeId',
+                 'view',
+                 'checkedIngredientIds',
+                 'checkedStepIds',
+                 'planCacheKey',
                  'updatedAt'
                ]) &&
                request.resource.data.recipeIds is list &&
                request.resource.data.recipeIds.size() <= 12 &&
+               (
+                 !('view' in request.resource.data) ||
+                 request.resource.data.view in ['recipes', 'ingredients', 'timeline']
+               ) &&
+               (
+                 !('checkedIngredientIds' in request.resource.data) ||
+                 (
+                   request.resource.data.checkedIngredientIds is list &&
+                   request.resource.data.checkedIngredientIds.size() <= 500
+                 )
+               ) &&
+               (
+                 !('checkedStepIds' in request.resource.data) ||
+                 (
+                   request.resource.data.checkedStepIds is list &&
+                   request.resource.data.checkedStepIds.size() <= 500
+                 )
+               ) &&
                (
                  request.resource.data.activeRecipeId == null ||
                  request.resource.data.activeRecipeId in request.resource.data.recipeIds
@@ -44,6 +323,11 @@ service cloud.firestore {
 
       allow read, delete: if isWorkspaceOwner();
       allow create, update: if isWorkspaceOwner() && isValidWorkspace();
+    }
+
+    match /settings/{documentId} {
+      allow read: if true;
+      allow write: if isAllowedEditor();
     }
   }
 }

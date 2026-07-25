@@ -39,6 +39,19 @@
     /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) &&
     new URLSearchParams(window.location.search).has('cooking-preview')
   );
+  const URL_PARAMS = new URLSearchParams(window.location.search);
+  const COOKBOOK_V2_ENABLED = Boolean(
+    window.COOKBOOK_CONFIG?.features?.cookbookV2 ||
+    (
+      /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) &&
+      URL_PARAMS.has('v2-preview')
+    )
+  );
+  const IS_LOCAL_V2_MOCK_PREVIEW = (
+    /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) &&
+    URL_PARAMS.has('v2-preview') &&
+    URL_PARAMS.has('mock-user')
+  );
 
   // Allowed email addresses that can edit recipes
   const ALLOWED_EDITORS = [
@@ -52,6 +65,23 @@
   // Auth state
   let currentUser = null;
   let canEdit = false;
+  let userProfile = null;
+  let userKitchens = [];
+  let kitchenRoles = {};
+  let favoriteIds = new Set();
+  let recipeAccessIds = new Set();
+  let recipeAccess = new Map();
+  let pendingInvitations = [];
+  let privateImageUrls = new Map();
+  let privateImageRefreshKey = '';
+  let v2Unsubscribers = [];
+  let currentLibraryScope = 'all';
+  let selectedLibraryKitchenId = '';
+  let favoritesFilterActive = false;
+  let isEditingProfile = false;
+  let appLanguage = 'he';
+  let translationCache = new Map();
+  let translationLoadingIds = new Set();
 
   // State
   let recipes = [];
@@ -71,8 +101,11 @@
   let selectedRecipeImage = null;
   let recipeImageAnalysisRequest = 0;
   let editingRecipeImage = null;
-  let cookingWorkspace = { recipeIds: [], activeRecipeId: null };
+  let cookingWorkspace = CookingWorkspaceCore.normalizeWorkspace({});
   let cookingWorkspaceUnsubscribe = null;
+  let cookingPlan = null;
+  let cookingPlanLoading = false;
+  let cookingPlanError = '';
   let isCookingWorkspaceOpen = false;
   let cookingSwipeStart = null;
   let cookingReturnFocus = null;
@@ -153,6 +186,115 @@
     { id: 'special-occasion', name: 'לאירועים', icon: '🎉', color: '#a855f7' }
   ];
 
+  const ENGLISH_CATEGORY_NAMES = {
+    breakfast: 'Breakfast',
+    'lunch-dinner': 'Lunch & dinner',
+    dessert: 'Dessert',
+    snacks: 'Snacks',
+    baby: 'Baby food',
+    pancakes: 'Pancakes & waffles',
+    granola: 'Granola & cereals',
+    eggs: 'Eggs & omelets',
+    'yeast-breakfast': 'Sweet pastries',
+    main: 'Main dishes',
+    soups: 'Soups',
+    salads: 'Salads & sides',
+    savory: 'Savory pastries',
+    pasta: 'Pasta',
+    spreads: 'Spreads & sauces',
+    desserts: 'Cakes & desserts',
+    cookies: 'Cookies',
+    yeast: 'Yeast pastries',
+    muffins: 'Muffins',
+    'sweet-snacks': 'Sweet snacks',
+    'savory-snacks': 'Savory snacks',
+    'baby-meals': 'Baby meals',
+    'baby-snacks': 'Baby snacks'
+  };
+
+  const ENGLISH_TAG_NAMES = {
+    tal: 'Tal',
+    einav: 'Einav',
+    vegetarian: 'Vegetarian',
+    vegan: 'Vegan',
+    'gluten-free': 'Gluten-free',
+    'dairy-free': 'Dairy-free',
+    parve: 'Parve',
+    quick: 'Quick',
+    'kid-friendly': 'Kid-friendly',
+    healthy: 'Healthy',
+    'comfort-food': 'Comfort food',
+    'special-occasion': 'Special occasion'
+  };
+
+  const UI_COPY = {
+    he: {
+      eyebrow: 'אוסף המתכונים המשפחתי',
+      title: 'ספר המתכונים של טל ועינב',
+      settings: 'הגדרות',
+      signIn: 'התחברות',
+      account: 'אזור אישי',
+      search: 'חיפוש לפי שם, מרכיב או תגית...',
+      all: 'הכול',
+      mine: 'המטבח שלי',
+      shared: 'שותף איתי',
+      kitchen: 'מטבח',
+      allKitchens: 'כל המטבחים',
+      filterTags: 'סינון לפי תגיות:',
+      favorites: 'מועדפים',
+      addRecipe: 'הוסף מתכון',
+      recipes: 'מתכונים',
+      recipe: 'מתכון',
+      text: 'מתכון',
+      link: 'קישור',
+      video: 'סרטון',
+      photo: 'תמונה',
+      cookingNow: 'לבישול עכשיו',
+      cookingActive: 'בבישול עכשיו'
+    },
+    en: {
+      eyebrow: 'The family recipe collection',
+      title: 'Tal & Einav’s Cookbook',
+      settings: 'Settings',
+      signIn: 'Sign in',
+      account: 'My account',
+      search: 'Search by name, ingredient, or tag…',
+      all: 'All',
+      mine: 'My kitchen',
+      shared: 'Shared with me',
+      kitchen: 'Kitchen',
+      allKitchens: 'All kitchens',
+      filterTags: 'Filter by tags:',
+      favorites: 'Favorites',
+      addRecipe: 'Add recipe',
+      recipes: 'recipes',
+      recipe: 'Recipe',
+      text: 'Recipe',
+      link: 'Link',
+      video: 'Video',
+      photo: 'Photo',
+      cookingNow: 'Cook now',
+      cookingActive: 'Cooking now'
+    }
+  };
+
+  function ui(key) {
+    return UI_COPY[appLanguage]?.[key] || UI_COPY.he[key] || key;
+  }
+
+  function localizedCategoryName(category) {
+    if (!category) return '';
+    return appLanguage === 'en'
+      ? (ENGLISH_CATEGORY_NAMES[category.id] || category.name)
+      : category.name;
+  }
+
+  function localizedTagName(tag) {
+    return appLanguage === 'en'
+      ? (ENGLISH_TAG_NAMES[tag.id] || tag.name)
+      : tag.name;
+  }
+
   // Email to tag mapping for auto-tagging
   const EMAIL_TO_TAG = {
     'taladani@gmail.com': 'tal',
@@ -227,6 +369,19 @@
   const authModalClose = document.getElementById('auth-modal-close');
   const googleSigninBtn = document.getElementById('google-signin-btn');
   const signoutBtn = document.getElementById('signout-btn');
+  const libraryToolbar = document.getElementById('library-toolbar');
+  const libraryKitchenSelect = document.getElementById('library-kitchen-select');
+  const onboardingModal = document.getElementById('onboarding-modal');
+  const onboardingForm = document.getElementById('onboarding-form');
+  const onboardingFirstName = document.getElementById('onboarding-first-name');
+  const onboardingUsername = document.getElementById('onboarding-username');
+  const onboardingSubmit = document.getElementById('onboarding-submit');
+  const createKitchenModal = document.getElementById('create-kitchen-modal');
+  const createKitchenForm = document.getElementById('create-kitchen-form');
+  const inviteKitchenModal = document.getElementById('invite-kitchen-modal');
+  const inviteKitchenForm = document.getElementById('invite-kitchen-form');
+  const shareRecipeModal = document.getElementById('share-recipe-modal');
+  const shareRecipeForm = document.getElementById('share-recipe-form');
   const cookingFab = document.getElementById('cooking-fab');
   const cookingFabCount = document.getElementById('cooking-fab-count');
   const cookingWorkspaceElement = document.getElementById('cooking-workspace');
@@ -237,6 +392,7 @@
   const cookingClearConfirm = document.getElementById('cooking-clear-confirm');
   const cookingClearCancel = document.getElementById('cooking-clear-cancel');
   const cookingClearConfirmBtn = document.getElementById('cooking-clear-confirm-btn');
+  const cookingViewSwitcher = document.getElementById('cooking-view-switcher');
 
   // Track selected tags for the editor
   let editingRecipeTags = [];
@@ -251,7 +407,55 @@
 
   // Auth functions
   function setupAuth() {
-    if (IS_LOCAL_COOKING_PREVIEW) {
+    if (IS_LOCAL_V2_MOCK_PREVIEW) {
+      const onboardingPreview = URL_PARAMS.has('onboarding-preview');
+      currentUser = {
+        uid: 'tal-preview',
+        email: 'taladani@gmail.com',
+        displayName: 'טל דני',
+        photoURL: '',
+        getIdToken: async () => 'preview-token'
+      };
+      userProfile = {
+        username: onboardingPreview ? '' : 'tal',
+        usernameNormalized: onboardingPreview ? '' : 'tal',
+        firstName: onboardingPreview ? '' : 'טל',
+        onboardingComplete: !onboardingPreview,
+        personalKitchenId: 'personal_tal-preview'
+      };
+      userKitchens = [
+        {
+          id: 'personal_tal-preview',
+          name: 'המטבח שלי',
+          type: 'personal',
+          ownerUid: 'tal-preview',
+          memberIds: ['tal-preview'],
+          memberRoles: { 'tal-preview': 'owner' }
+        },
+        {
+          id: 'schreiber',
+          name: 'שרייבר',
+          type: 'shared',
+          ownerUid: 'tal-preview',
+          memberIds: ['tal-preview', 'einav-preview'],
+          memberRoles: { 'tal-preview': 'owner', 'einav-preview': 'admin' }
+        }
+      ];
+      kitchenRoles = {
+        'personal_tal-preview': 'owner',
+        schreiber: 'owner'
+      };
+      canEdit = !onboardingPreview;
+      updateAuthUI();
+      updateEditButtonsVisibility();
+      renderV2Chrome();
+      if (onboardingPreview) {
+        requestAnimationFrame(() => openOnboardingModal(false));
+      }
+      return;
+    }
+
+    if (IS_LOCAL_COOKING_PREVIEW || IS_LOCAL_V2_MOCK_PREVIEW) {
       currentUser = {
         uid: 'local-cooking-preview',
         email: 'preview@local.test',
@@ -264,12 +468,17 @@
     }
 
     // Listen for auth state changes
-    auth.onAuthStateChanged((user) => {
+    auth.onAuthStateChanged(async (user) => {
       currentUser = user;
       canEdit = user && ALLOWED_EDITORS.includes(user.email);
+      userProfile = null;
+      stopV2Subscriptions();
       updateAuthUI();
       updateEditButtonsVisibility();
       subscribeToCookingWorkspace(user);
+      if (COOKBOOK_V2_ENABLED) {
+        await initializeV2ForUser(user);
+      }
     });
   }
 
@@ -282,12 +491,27 @@
       signedOutDiv.style.display = 'none';
       signedInDiv.style.display = 'block';
 
-      document.getElementById('auth-user-photo').src = currentUser.photoURL || '';
+      const fallbackInitial = (
+        userProfile?.firstName ||
+        currentUser.displayName ||
+        currentUser.email ||
+        'מ'
+      ).trim().charAt(0);
+      const fallbackAvatar = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
+          <rect width="96" height="96" rx="48" fill="#eee8dd"/>
+          <text x="48" y="58" text-anchor="middle" font-family="Arial, sans-serif" font-size="38" font-weight="600" fill="#95472f">${fallbackInitial}</text>
+        </svg>
+      `)}`;
+      document.getElementById('auth-user-photo').src = currentUser.photoURL || fallbackAvatar;
       document.getElementById('auth-user-name').textContent = currentUser.displayName || 'משתמש';
       document.getElementById('auth-user-email').textContent = currentUser.email;
 
       const permissionStatus = document.getElementById('auth-permission-status');
-      if (canEdit) {
+      if (COOKBOOK_V2_ENABLED && userProfile?.onboardingComplete) {
+        permissionStatus.className = 'auth-permission-status v2-profile-status';
+        permissionStatus.textContent = 'המתכונים שלך נשמרים במטבח האישי';
+      } else if (canEdit) {
         permissionStatus.className = 'auth-permission-status has-permission';
         permissionStatus.textContent = '✓ יש לך הרשאה לערוך מתכונים';
       } else {
@@ -296,8 +520,11 @@
       }
 
       authBtn.classList.add('signed-in');
-      if (authLabel) authLabel.textContent = 'החשבון שלי';
-      authBtn.title = 'החשבון שלי';
+      const accountLabel = appLanguage === 'en'
+        ? 'My account'
+        : (COOKBOOK_V2_ENABLED ? 'אזור אישי' : 'החשבון שלי');
+      if (authLabel) authLabel.textContent = accountLabel;
+      authBtn.title = accountLabel;
       authBtn.setAttribute(
         'aria-label',
         `פתיחת החשבון של ${currentUser.displayName || currentUser.email || 'המשתמש'}`
@@ -306,9 +533,9 @@
       signedOutDiv.style.display = 'block';
       signedInDiv.style.display = 'none';
       authBtn.classList.remove('signed-in');
-      if (authLabel) authLabel.textContent = 'התחברות';
-      authBtn.title = 'התחברות';
-      authBtn.setAttribute('aria-label', 'התחברות');
+      if (authLabel) authLabel.textContent = ui('signIn');
+      authBtn.title = ui('signIn');
+      authBtn.setAttribute('aria-label', ui('signIn'));
     }
   }
 
@@ -323,7 +550,12 @@
 
     // Categories settings section (only for editors)
     const categoriesSection = document.getElementById('categories-settings-section');
-    if (categoriesSection) categoriesSection.classList.toggle('hidden', !canEdit);
+    if (categoriesSection) {
+      categoriesSection.classList.toggle(
+        'hidden',
+        !currentUser || !ALLOWED_EDITORS.includes(currentUser.email)
+      );
+    }
   }
 
   async function signInWithGoogle() {
@@ -349,6 +581,7 @@
   }
 
   function openAuthModal() {
+    if (COOKBOOK_V2_ENABLED) renderV2Chrome();
     authModal.classList.add('active');
     document.body.style.overflow = 'hidden';
   }
@@ -358,16 +591,882 @@
     document.body.style.overflow = '';
   }
 
+  // Cookbook v2: user-bound recipes, personal libraries, and shared kitchens.
+  function stopV2Subscriptions() {
+    v2Unsubscribers.forEach(unsubscribe => {
+      try { unsubscribe(); } catch (error) {}
+    });
+    v2Unsubscribers = [];
+    userKitchens = [];
+    kitchenRoles = {};
+    favoriteIds = new Set();
+    recipeAccessIds = new Set();
+    recipeAccess = new Map();
+    pendingInvitations = [];
+    privateImageUrls = new Map();
+    privateImageRefreshKey = '';
+  }
+
+  function getViewerContext() {
+    return {
+      uid: currentUser?.uid || null,
+      isLegacyEditor: Boolean(currentUser && ALLOWED_EDITORS.includes(currentUser.email)),
+      kitchenRoles,
+      favoriteIds,
+      recipeAccessIds,
+      recipeAccess
+    };
+  }
+
+  function canEditRecipeNow(recipe) {
+    if (!COOKBOOK_V2_ENABLED) return canEdit;
+    return CookbookV2Core.canEditRecipe(recipe, getViewerContext());
+  }
+
+  function isSystemEditor() {
+    return Boolean(currentUser && ALLOWED_EDITORS.includes(currentUser.email));
+  }
+
+  function canCopyRecipeNow(recipe) {
+    return COOKBOOK_V2_ENABLED && CookbookV2Core.canCopyRecipe(recipe, getViewerContext());
+  }
+
+  async function sha256Text(value) {
+    const bytes = new TextEncoder().encode(String(value || '').trim().toLowerCase());
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(digest)]
+      .map(byte => byte.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  async function initializeV2ForUser(user) {
+    if (!COOKBOOK_V2_ENABLED) return;
+    libraryToolbar.hidden = !user;
+    if (!user) {
+      currentLibraryScope = 'all';
+      selectedLibraryKitchenId = '';
+      favoritesFilterActive = false;
+      closeOnboardingModal();
+      renderV2Chrome();
+      renderTagFilters();
+      renderRecipes();
+      return;
+    }
+
+    try {
+      const snapshot = await db.collection('users').doc(user.uid).get();
+      userProfile = snapshot.exists ? snapshot.data() : null;
+    } catch (error) {
+      console.error('Failed to load v2 profile:', error);
+      showToast('לא הצלחנו לטעון את האזור האישי', 'error');
+      return;
+    }
+
+    canEdit = Boolean(userProfile?.onboardingComplete);
+    updateAuthUI();
+    updateEditButtonsVisibility();
+    renderV2Chrome();
+
+    if (!userProfile?.onboardingComplete) {
+      openOnboardingModal(false);
+      return;
+    }
+
+    subscribeToV2Data();
+    refreshPrivateImageUrls();
+  }
+
+  function openOnboardingModal(editing = false) {
+    if (!currentUser) return;
+    isEditingProfile = editing;
+    const inferredFirstName = (currentUser.displayName || '').trim().split(/\s+/)[0] || '';
+    onboardingFirstName.value = userProfile?.firstName || inferredFirstName;
+    onboardingUsername.value = userProfile?.username || '';
+    document.getElementById('onboarding-title').textContent = editing
+      ? 'עדכון הפרטים שלך'
+      : 'איך נכיר אותך במטבח?';
+    onboardingSubmit.querySelector('.btn-text').textContent = editing
+      ? 'שמירת שינויים'
+      : 'יצירת המטבח שלי';
+    document.getElementById('onboarding-first-name-error').textContent = '';
+    document.getElementById('onboarding-username-error').textContent = '';
+    onboardingModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() => onboardingFirstName.focus());
+  }
+
+  function closeOnboardingModal() {
+    onboardingModal?.classList.remove('active');
+    if (!document.querySelector('.modal.active')) document.body.style.overflow = '';
+  }
+
+  async function saveV2Profile(event) {
+    event.preventDefault();
+    if (!currentUser) return;
+
+    const validation = CookbookV2Core.validateProfile({
+      firstName: onboardingFirstName.value,
+      username: onboardingUsername.value
+    });
+    document.getElementById('onboarding-first-name-error').textContent =
+      validation.errors.firstName || '';
+    document.getElementById('onboarding-username-error').textContent =
+      validation.errors.username || '';
+    if (!validation.valid) return;
+
+    const submitText = onboardingSubmit.querySelector('.btn-text');
+    const submitLoading = onboardingSubmit.querySelector('.btn-loading');
+    onboardingSubmit.disabled = true;
+    submitText.hidden = true;
+    submitLoading.hidden = false;
+
+    const profile = validation.value;
+    const userRef = db.collection('users').doc(currentUser.uid);
+    const usernameRef = db.collection('usernames').doc(profile.usernameNormalized);
+    const personalId = CookbookV2Core.personalKitchenId(currentUser.uid);
+    const kitchenRef = db.collection('kitchens').doc(personalId);
+    const emailNormalized = String(currentUser.email || '').trim().toLowerCase();
+    const emailHash = await sha256Text(emailNormalized);
+    const emailDirectoryRef = db.collection('emailDirectory').doc(emailHash);
+    const previousUsername = userProfile?.usernameNormalized || '';
+
+    try {
+      await db.runTransaction(async transaction => {
+        const usernameSnapshot = await transaction.get(usernameRef);
+        const previousRef = previousUsername && previousUsername !== profile.usernameNormalized
+          ? db.collection('usernames').doc(previousUsername)
+          : null;
+        const previousSnapshot = previousRef
+          ? await transaction.get(previousRef)
+          : null;
+        if (
+          usernameSnapshot.exists &&
+          usernameSnapshot.data().uid !== currentUser.uid
+        ) {
+          const error = new Error('username-taken');
+          error.code = 'username-taken';
+          throw error;
+        }
+
+        const now = firebase.firestore.FieldValue.serverTimestamp();
+        transaction.set(usernameRef, {
+          uid: currentUser.uid,
+          username: profile.username,
+          firstName: profile.firstName,
+          updatedAt: now
+        });
+        transaction.set(emailDirectoryRef, {
+          uid: currentUser.uid,
+          updatedAt: now
+        });
+        transaction.set(userRef, {
+          ...profile,
+          email: emailNormalized,
+          photoURL: currentUser.photoURL || '',
+          personalKitchenId: personalId,
+          updatedAt: now,
+          createdAt: userProfile?.createdAt || now
+        }, { merge: true });
+        transaction.set(kitchenRef, {
+          name: 'המטבח שלי',
+          type: 'personal',
+          ownerUid: currentUser.uid,
+          memberIds: [currentUser.uid],
+          memberRoles: { [currentUser.uid]: 'owner' },
+          updatedAt: now,
+          createdAt: userProfile?.createdAt || now
+        }, { merge: true });
+
+        if (previousRef && previousSnapshot) {
+          if (previousSnapshot.exists && previousSnapshot.data().uid === currentUser.uid) {
+            transaction.delete(previousRef);
+          }
+        }
+      });
+
+      userProfile = {
+        ...userProfile,
+        ...profile,
+        email: emailNormalized,
+        photoURL: currentUser.photoURL || '',
+        personalKitchenId: personalId
+      };
+      canEdit = true;
+      closeOnboardingModal();
+      updateAuthUI();
+      updateEditButtonsVisibility();
+      subscribeToV2Data();
+      refreshPrivateImageUrls();
+      showToast(isEditingProfile ? 'הפרופיל עודכן' : 'המטבח האישי שלך מוכן', 'success');
+    } catch (error) {
+      console.error('Profile save failed:', error);
+      if (error.code === 'username-taken' || error.message === 'username-taken') {
+        document.getElementById('onboarding-username-error').textContent =
+          'שם המשתמש הזה כבר תפוס';
+        onboardingUsername.focus();
+      } else {
+        showToast('לא הצלחנו לשמור את הפרופיל', 'error');
+      }
+    } finally {
+      onboardingSubmit.disabled = false;
+      submitText.hidden = false;
+      submitLoading.hidden = true;
+    }
+  }
+
+  function subscribeToV2Data() {
+    stopV2Subscriptions();
+    if (!currentUser || !userProfile?.onboardingComplete) return;
+
+    const handleSubscriptionError = label => error => {
+      console.error(`${label} subscription failed:`, error);
+    };
+
+    v2Unsubscribers.push(
+      db.collection('users').doc(currentUser.uid).collection('favorites')
+        .onSnapshot(snapshot => {
+          favoriteIds = new Set(snapshot.docs.map(doc => doc.id));
+          renderTagFilters();
+          renderRecipes();
+        }, handleSubscriptionError('Favorites'))
+    );
+
+    v2Unsubscribers.push(
+      db.collection('users').doc(currentUser.uid).collection('recipeAccess')
+        .onSnapshot(snapshot => {
+          recipeAccess = new Map(snapshot.docs.map(doc => [doc.id, doc.data()]));
+          recipeAccessIds = new Set([...recipeAccess.entries()]
+            .filter(([, access]) => access.active !== false)
+            .map(([recipeId]) => recipeId));
+          renderRecipes();
+        }, handleSubscriptionError('Recipe access'))
+    );
+
+    v2Unsubscribers.push(
+      db.collection('kitchens').where('memberIds', 'array-contains', currentUser.uid)
+        .onSnapshot(snapshot => {
+          userKitchens = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          kitchenRoles = Object.fromEntries(
+            userKitchens.map(kitchen => [
+              kitchen.id,
+              kitchen.memberRoles?.[currentUser.uid] || (
+                kitchen.ownerUid === currentUser.uid ? 'owner' : 'member'
+              )
+            ])
+          );
+          renderV2Chrome();
+          renderRecipes();
+        }, handleSubscriptionError('Kitchens'))
+    );
+
+    const invitationMap = new Map();
+    const updateInvitations = (source, snapshot) => {
+      for (const [key, invitation] of invitationMap) {
+        if (invitation._source === source) invitationMap.delete(key);
+      }
+      snapshot.docs.forEach(doc => invitationMap.set(doc.id, {
+        id: doc.id,
+        ...doc.data(),
+        _source: source
+      }));
+      pendingInvitations = [...invitationMap.values()].filter(
+        invitation => invitation.status === 'pending'
+      );
+      renderV2Chrome();
+    };
+
+    v2Unsubscribers.push(
+      db.collection('invitations')
+        .where('targetUid', '==', currentUser.uid)
+        .where('status', '==', 'pending')
+        .onSnapshot(
+          snapshot => updateInvitations('uid', snapshot),
+          handleSubscriptionError('UID invitations')
+        )
+    );
+
+    const emailNormalized = String(currentUser.email || '').trim().toLowerCase();
+    if (emailNormalized) {
+      v2Unsubscribers.push(
+        db.collection('invitations')
+          .where('targetEmail', '==', emailNormalized)
+          .where('status', '==', 'pending')
+          .onSnapshot(
+            snapshot => updateInvitations('email', snapshot),
+            handleSubscriptionError('Email invitations')
+          )
+      );
+    }
+  }
+
+  async function refreshPrivateImageUrls() {
+    if (!COOKBOOK_V2_ENABLED || !currentUser || !IMPORTER_URL) return;
+    const images = recipes.flatMap(recipe =>
+      (recipe.content?.privateImageKeys || []).map(key => ({
+        recipeId: recipe.id,
+        key
+      }))
+    );
+    if (!images.length) return;
+    const refreshKey = images.map(item => `${item.recipeId}:${item.key}`).sort().join('|');
+    if (refreshKey === privateImageRefreshKey) return;
+    privateImageRefreshKey = refreshKey;
+    try {
+      const nextUrls = new Map();
+      for (let index = 0; index < images.length; index += 50) {
+        const result = await callImporter('/private-images/sign', {
+          images: images.slice(index, index + 50)
+        });
+        Object.entries(result.urls || {}).forEach(([key, url]) => nextUrls.set(key, url));
+      }
+      privateImageUrls = nextUrls;
+      renderRecipes();
+      if (currentRecipeId && modal.classList.contains('active')) openRecipe(currentRecipeId);
+    } catch (error) {
+      privateImageRefreshKey = '';
+      console.error('Private image signing failed:', error);
+    }
+  }
+
+  function renderV2Chrome() {
+    if (!COOKBOOK_V2_ENABLED) return;
+    libraryToolbar.hidden = !currentUser || !userProfile?.onboardingComplete;
+
+    document.querySelectorAll('[data-library-scope]').forEach(button => {
+      const active = button.dataset.libraryScope === currentLibraryScope;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+
+    if (libraryKitchenSelect) {
+      const sharedKitchens = userKitchens.filter(kitchen => kitchen.type === 'shared');
+      libraryKitchenSelect.innerHTML = `
+        <option value="">${ui('allKitchens')}</option>
+        ${sharedKitchens.map(kitchen => `
+          <option value="${escapeHtml(kitchen.id)}">${escapeHtml(kitchen.name)}</option>
+        `).join('')}
+      `;
+      libraryKitchenSelect.value = sharedKitchens.some(
+        kitchen => kitchen.id === selectedLibraryKitchenId
+      ) ? selectedLibraryKitchenId : '';
+    }
+
+    if (!currentUser) return;
+    document.getElementById('auth-user-name').textContent =
+      userProfile?.firstName || currentUser.displayName || 'משתמש';
+    document.getElementById('account-greeting').textContent =
+      `שלום ${userProfile?.firstName || ''}`.trim();
+    document.getElementById('auth-username').textContent =
+      userProfile?.username ? `@${userProfile.username}` : 'הפרופיל עדיין לא הושלם';
+
+    const kitchenList = document.getElementById('account-kitchen-list');
+    if (kitchenList) {
+      kitchenList.innerHTML = userKitchens.length
+        ? userKitchens.map(kitchen => {
+            const role = kitchenRoles[kitchen.id];
+            const canInvite = kitchen.type === 'shared' && (role === 'owner' || role === 'admin');
+            const roleLabel = kitchen.type === 'personal'
+              ? 'פרטי · בבעלותך'
+              : ({ owner: 'בעלים', admin: 'מנהל/ת', member: 'חבר/ה' }[role] || 'חבר/ה');
+            return `
+              <div class="account-kitchen-item">
+                <div class="account-kitchen-copy">
+                  <strong>${escapeHtml(kitchen.name)}</strong>
+                  <span>${roleLabel}</span>
+                </div>
+                <div class="account-kitchen-actions">
+                  ${kitchen.type === 'shared' ? `
+                    <button type="button" data-action="open-kitchen" data-kitchen-id="${escapeHtml(kitchen.id)}">פתיחה</button>
+                  ` : ''}
+                  ${canInvite ? `
+                    <button type="button" data-action="invite-kitchen" data-kitchen-id="${escapeHtml(kitchen.id)}">הזמנה</button>
+                  ` : ''}
+                </div>
+              </div>
+            `;
+          }).join('')
+        : '<div class="account-kitchen-item"><div class="account-kitchen-copy"><strong>המטבח האישי</strong><span>מכינים אותו עכשיו…</span></div></div>';
+    }
+
+    const invitationSection = document.getElementById('account-invitations-section');
+    const invitationList = document.getElementById('account-invitation-list');
+    if (invitationSection && invitationList) {
+      invitationSection.hidden = pendingInvitations.length === 0;
+      invitationList.innerHTML = pendingInvitations.map(invitation => `
+        <div class="account-invitation-item">
+          <div class="account-invitation-copy">
+            <strong>${escapeHtml(invitation.title || invitation.kitchenName || 'שיתוף מתכונים')}</strong>
+            <span>מאת @${escapeHtml(invitation.inviterUsername || 'משתמש')}</span>
+          </div>
+          <div class="account-invitation-actions">
+            <button type="button" data-action="decline-invitation" data-invitation-id="${escapeHtml(invitation.id)}">דחייה</button>
+            <button type="button" data-action="accept-invitation" data-invitation-id="${escapeHtml(invitation.id)}">אישור</button>
+          </div>
+        </div>
+      `).join('');
+    }
+  }
+
+  async function toggleFavorite(recipeId) {
+    if (!currentUser || !userProfile?.onboardingComplete) {
+      showToast('התחברו כדי לשמור מועדפים', 'info');
+      openAuthModal();
+      return;
+    }
+    const ref = db.collection('users').doc(currentUser.uid).collection('favorites').doc(recipeId);
+    const wasFavorite = favoriteIds.has(recipeId);
+    if (wasFavorite) favoriteIds.delete(recipeId);
+    else favoriteIds.add(recipeId);
+    renderTagFilters();
+    renderRecipes();
+    try {
+      if (wasFavorite) {
+        await ref.delete();
+      } else {
+        await ref.set({
+          recipeId,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
+    } catch (error) {
+      if (wasFavorite) favoriteIds.add(recipeId);
+      else favoriteIds.delete(recipeId);
+      renderTagFilters();
+      renderRecipes();
+      console.error('Favorite update failed:', error);
+      showToast('לא הצלחנו לעדכן את המועדפים', 'error');
+    }
+  }
+
+  function openCreateKitchenModal() {
+    createKitchenForm.reset();
+    createKitchenModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() => document.getElementById('create-kitchen-name').focus());
+  }
+
+  function closeCreateKitchenModal() {
+    createKitchenModal.classList.remove('active');
+    if (!document.querySelector('.modal.active')) document.body.style.overflow = '';
+  }
+
+  async function createSharedKitchen(event) {
+    event.preventDefault();
+    if (!currentUser || !userProfile?.onboardingComplete) return;
+    const name = document.getElementById('create-kitchen-name').value.trim();
+    if (!name) {
+      showToast('צריך להוסיף שם למטבח', 'error');
+      return;
+    }
+    const ref = db.collection('kitchens').doc();
+    try {
+      await ref.set({
+        name,
+        nameNormalized: name.normalize('NFKC').toLocaleLowerCase(),
+        type: 'shared',
+        ownerUid: currentUser.uid,
+        memberIds: [currentUser.uid],
+        memberRoles: { [currentUser.uid]: 'owner' },
+        createdBy: currentUser.uid,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      closeCreateKitchenModal();
+      showToast(`המטבח ${name} נוצר`, 'success');
+    } catch (error) {
+      console.error('Kitchen creation failed:', error);
+      showToast('לא הצלחנו ליצור את המטבח', 'error');
+    }
+  }
+
+  function openInviteKitchenModal(kitchenId) {
+    const kitchen = userKitchens.find(item => item.id === kitchenId);
+    if (!kitchen) return;
+    document.getElementById('invite-kitchen-id').value = kitchen.id;
+    document.getElementById('invite-kitchen-description').textContent =
+      `הזמנה למטבח ${kitchen.name}`;
+    inviteKitchenForm.reset();
+    document.getElementById('invite-kitchen-id').value = kitchen.id;
+    inviteKitchenModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeInviteKitchenModal() {
+    inviteKitchenModal.classList.remove('active');
+    if (!document.querySelector('.modal.active')) document.body.style.overflow = '';
+  }
+
+  async function resolveInviteTarget(rawTarget) {
+    const target = String(rawTarget || '').trim();
+    if (!target) throw new Error('missing-target');
+    if (target.includes('@') && !target.startsWith('@')) {
+      const targetEmail = target.toLowerCase();
+      const emailHash = await sha256Text(targetEmail);
+      const directory = await db.collection('emailDirectory').doc(emailHash).get();
+      return {
+        kind: 'email',
+        targetUid: directory.exists ? directory.data().uid : null,
+        targetEmail,
+        targetUsername: null
+      };
+    }
+    const username = CookbookV2Core.normalizeUsername(target);
+    const directory = await db.collection('usernames').doc(username).get();
+    if (!directory.exists) throw new Error('user-not-found');
+    return {
+      kind: 'username',
+      targetUid: directory.data().uid,
+      targetEmail: null,
+      targetUsername: username
+    };
+  }
+
+  async function inviteToKitchen(event) {
+    event.preventDefault();
+    const kitchenId = document.getElementById('invite-kitchen-id').value;
+    const kitchen = userKitchens.find(item => item.id === kitchenId);
+    if (!kitchen) return;
+    const role = document.getElementById('invite-kitchen-role').value;
+    try {
+      const target = await resolveInviteTarget(
+        document.getElementById('invite-kitchen-recipient').value
+      );
+      if (target.targetUid === currentUser.uid) throw new Error('self-invite');
+      await db.collection('invitations').add({
+        type: 'kitchen',
+        title: `הזמנה למטבח ${kitchen.name}`,
+        kitchenId,
+        kitchenName: kitchen.name,
+        role: role === 'admin' ? 'admin' : 'member',
+        inviterUid: currentUser.uid,
+        inviterUsername: userProfile.username,
+        ...target,
+        status: 'pending',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      closeInviteKitchenModal();
+      showToast('ההזמנה נשלחה', 'success');
+    } catch (error) {
+      console.error('Kitchen invitation failed:', error);
+      const message = error.message === 'user-not-found'
+        ? 'לא מצאנו את שם המשתמש הזה'
+        : error.message === 'self-invite'
+          ? 'אין צורך להזמין את עצמך'
+          : 'לא הצלחנו לשלוח את ההזמנה';
+      showToast(message, 'error');
+    }
+  }
+
+  function populateShareScopeValues() {
+    const scopeType = document.getElementById('share-scope-type').value;
+    const group = document.getElementById('share-scope-value-group');
+    const select = document.getElementById('share-scope-value');
+    const futureWrap = document.getElementById('share-future-wrap');
+    group.hidden = scopeType === 'recipe' || scopeType === 'all';
+    futureWrap.hidden = scopeType === 'recipe';
+    if (scopeType === 'category') {
+      select.innerHTML = MAIN_CATEGORIES.map(category => `
+        <option value="${escapeHtml(category.id)}">${escapeHtml(category.name)}</option>
+      `).join('');
+    } else if (scopeType === 'tag') {
+      select.innerHTML = AVAILABLE_TAGS.map(tag => `
+        <option value="${escapeHtml(tag.id)}">${escapeHtml(tag.name)}</option>
+      `).join('');
+    }
+  }
+
+  function openShareRecipeModal(recipeId) {
+    const recipe = recipes.find(item => item.id === recipeId);
+    if (!recipe || !canEditRecipeNow(recipe)) return;
+    shareRecipeForm.reset();
+    document.getElementById('share-source-recipe-id').value = recipeId;
+    document.getElementById('share-allow-copy').checked = true;
+    populateShareScopeValues();
+    shareRecipeModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeShareRecipeModal() {
+    shareRecipeModal.classList.remove('active');
+    if (!document.querySelector('.modal.active')) document.body.style.overflow = '';
+  }
+
+  function resolveKitchenTarget(rawTarget) {
+    const target = String(rawTarget || '').trim().toLocaleLowerCase();
+    return userKitchens.find(kitchen =>
+      kitchen.type === 'shared' &&
+      (
+        kitchen.id.toLocaleLowerCase() === target ||
+        String(kitchen.name || '').trim().toLocaleLowerCase() === target
+      )
+    ) || null;
+  }
+
+  async function writeAccessGrants(recipeIds, targetUids, policyId, allowCopy) {
+    const writes = [];
+    for (const uid of targetUids) {
+      for (const recipeId of recipeIds) {
+        writes.push({
+          ref: db.collection('users').doc(uid).collection('recipeAccess').doc(recipeId),
+          data: {
+            recipeId,
+            policyIds: firebase.firestore.FieldValue.arrayUnion(policyId),
+            primaryPolicyId: policyId,
+            allowCopy,
+            active: true,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          }
+        });
+      }
+    }
+    for (let index = 0; index < writes.length; index += 400) {
+      const batch = db.batch();
+      writes.slice(index, index + 400).forEach(write => {
+        batch.set(write.ref, write.data, { merge: true });
+      });
+      await batch.commit();
+    }
+  }
+
+  async function applyFutureSharePoliciesToRecipe(recipe) {
+    if (!currentUser || recipe.ownerUid !== currentUser.uid) return;
+    try {
+      const snapshot = await db.collection('sharePolicies')
+        .where('ownerUid', '==', currentUser.uid)
+        .get();
+      const policies = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() }))
+        .filter(policy =>
+          policy.active !== false &&
+          policy.includeFuture === true &&
+          CookbookV2Core.matchesSharePolicy(recipe, policy)
+        );
+      for (const policy of policies) {
+        if (policy.targetType === 'kitchen' && policy.targetId) {
+          const kitchen = userKitchens.find(item => item.id === policy.targetId);
+          if (!kitchen) continue;
+          await db.collection('recipes').doc(recipe.id).update({
+            sharedKitchenIds: firebase.firestore.FieldValue.arrayUnion(kitchen.id)
+          });
+          await writeAccessGrants(
+            [recipe.id],
+            kitchen.memberIds || [],
+            policy.id,
+            policy.permissions?.allowCopy !== false
+          );
+        } else if (policy.targetUid) {
+          await writeAccessGrants(
+            [recipe.id],
+            [policy.targetUid],
+            policy.id,
+            policy.permissions?.allowCopy !== false
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Future share policy application failed:', error);
+      showToast('המתכון נשמר, אבל שיתוף עתידי אחד דורש בדיקה', 'info');
+    }
+  }
+
+  async function shareRecipes(event) {
+    event.preventDefault();
+    const sourceRecipeId = document.getElementById('share-source-recipe-id').value;
+    const sourceRecipe = recipes.find(recipe => recipe.id === sourceRecipeId);
+    if (!sourceRecipe || !canEditRecipeNow(sourceRecipe)) return;
+
+    const rawTarget = document.getElementById('share-target').value.trim();
+    const scopeType = document.getElementById('share-scope-type').value;
+    const scopeValue = scopeType === 'recipe'
+      ? sourceRecipeId
+      : scopeType === 'all'
+        ? null
+        : document.getElementById('share-scope-value').value;
+    const includeFuture = scopeType !== 'recipe' &&
+      document.getElementById('share-include-future').checked;
+    const allowCopy = document.getElementById('share-allow-copy').checked;
+    const kitchenTarget = resolveKitchenTarget(rawTarget);
+
+    try {
+      const target = kitchenTarget
+        ? { targetType: 'kitchen', targetId: kitchenTarget.id }
+        : { targetType: 'user', ...(await resolveInviteTarget(rawTarget)) };
+      const policyRef = db.collection('sharePolicies').doc();
+      const policy = {
+        ownerUid: currentUser.uid,
+        ownerUsername: userProfile.username,
+        targetType: target.targetType,
+        targetId: target.targetId || target.targetUid || null,
+        targetUid: target.targetUid || null,
+        targetEmail: target.targetEmail || null,
+        targetUsername: target.targetUsername || null,
+        scopeType,
+        scopeValue,
+        includeFuture,
+        permissions: { view: true, allowCopy },
+        active: true,
+        createdAt: new Date().toISOString()
+      };
+      const recipeIds = CookbookV2Core.resolvePolicyRecipeIds(policy, recipes);
+
+      await policyRef.set({
+        ...policy,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+
+      if (kitchenTarget) {
+        const batch = db.batch();
+        const kitchenEditorUids = Object.entries(kitchenTarget.memberRoles || {})
+          .filter(([, role]) => role === 'owner' || role === 'admin')
+          .map(([uid]) => uid);
+        recipeIds.forEach(recipeId => {
+          batch.update(db.collection('recipes').doc(recipeId), {
+            sharedKitchenIds: firebase.firestore.FieldValue.arrayUnion(kitchenTarget.id),
+            editorUids: firebase.firestore.FieldValue.arrayUnion(...kitchenEditorUids),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        });
+        if (recipeIds.length) await batch.commit();
+        await writeAccessGrants(
+          recipeIds,
+          kitchenTarget.memberIds || [],
+          policyRef.id,
+          allowCopy
+        );
+      } else if (target.targetUid) {
+        await writeAccessGrants(recipeIds, [target.targetUid], policyRef.id, allowCopy);
+      } else {
+        await db.collection('invitations').add({
+          type: 'recipe-share',
+          title: scopeType === 'recipe' ? sourceRecipe.name : 'שיתוף אוסף מתכונים',
+          sharePolicyId: policyRef.id,
+          inviterUid: currentUser.uid,
+          inviterUsername: userProfile.username,
+          targetUid: null,
+          targetEmail: target.targetEmail,
+          status: 'pending',
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
+
+      closeShareRecipeModal();
+      showToast(`שותפו ${recipeIds.length} מתכונים`, 'success');
+    } catch (error) {
+      console.error('Recipe share failed:', error);
+      showToast(
+        error.message === 'user-not-found'
+          ? 'לא מצאנו את שם המשתמש הזה'
+          : 'לא הצלחנו להשלים את השיתוף',
+        'error'
+      );
+    }
+  }
+
+  async function acceptInvitation(invitationId) {
+    const invitation = pendingInvitations.find(item => item.id === invitationId);
+    if (!invitation || !currentUser) return;
+    try {
+      if (invitation.type === 'kitchen') {
+        const kitchenRef = db.collection('kitchens').doc(invitation.kitchenId);
+        await db.runTransaction(async transaction => {
+          const kitchenSnapshot = await transaction.get(kitchenRef);
+          if (!kitchenSnapshot.exists) throw new Error('missing-kitchen');
+          const kitchen = kitchenSnapshot.data();
+          transaction.update(kitchenRef, {
+            memberIds: [...new Set([...(kitchen.memberIds || []), currentUser.uid])],
+            [`memberRoles.${currentUser.uid}`]: invitation.role === 'admin' ? 'admin' : 'member',
+            lastAcceptedInvitationId: invitationId,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          transaction.update(db.collection('invitations').doc(invitationId), {
+            status: 'accepted',
+            acceptedByUid: currentUser.uid,
+            acceptedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        });
+      } else if (invitation.type === 'recipe-share' && invitation.sharePolicyId) {
+        const policySnapshot = await db.collection('sharePolicies')
+          .doc(invitation.sharePolicyId)
+          .get();
+        if (!policySnapshot.exists) throw new Error('missing-policy');
+        const policy = { id: policySnapshot.id, ...policySnapshot.data() };
+        const recipeIds = CookbookV2Core.resolvePolicyRecipeIds(policy, recipes);
+        await writeAccessGrants(
+          recipeIds,
+          [currentUser.uid],
+          policySnapshot.id,
+          policy.permissions?.allowCopy !== false
+        );
+        await db.collection('invitations').doc(invitationId).update({
+          status: 'accepted',
+          acceptedByUid: currentUser.uid,
+          acceptedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
+      showToast('ההזמנה אושרה', 'success');
+    } catch (error) {
+      console.error('Invitation acceptance failed:', error);
+      showToast('לא הצלחנו לאשר את ההזמנה', 'error');
+    }
+  }
+
+  async function declineInvitation(invitationId) {
+    try {
+      await db.collection('invitations').doc(invitationId).update({
+        status: 'declined',
+        declinedByUid: currentUser.uid,
+        declinedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      showToast('ההזמנה נדחתה', 'info');
+    } catch (error) {
+      console.error('Invitation decline failed:', error);
+      showToast('לא הצלחנו לעדכן את ההזמנה', 'error');
+    }
+  }
+
+  async function copyRecipeToPersonalKitchen(recipeId) {
+    const source = recipes.find(recipe => recipe.id === recipeId);
+    if (!source || !canCopyRecipeNow(source) || !userProfile) return;
+    const copy = CookbookV2Core.createRecipeCopy(source, {
+      uid: currentUser.uid,
+      username: userProfile.username,
+      firstName: userProfile.firstName,
+      email: currentUser.email,
+      personalKitchenId: userProfile.personalKitchenId
+    });
+    const ref = db.collection('recipes').doc();
+    delete copy.id;
+    try {
+      await ref.set({
+        ...copy,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      recipes.unshift({ id: ref.id, ...copy });
+      updateRecipesCache();
+      renderTagFilters();
+      renderRecipes();
+      closeModal();
+      showToast(`נוצר עותק אישי מ־@${source.author?.username || 'המקור'}`, 'success');
+    } catch (error) {
+      console.error('Recipe copy failed:', error);
+      showToast('לא הצלחנו ליצור עותק', 'error');
+    }
+  }
+
   // Live cooking workspace
   function subscribeToCookingWorkspace(user) {
-    if (IS_LOCAL_COOKING_PREVIEW) return;
+    if (IS_LOCAL_COOKING_PREVIEW || IS_LOCAL_V2_MOCK_PREVIEW) return;
 
     if (cookingWorkspaceUnsubscribe) {
       cookingWorkspaceUnsubscribe();
       cookingWorkspaceUnsubscribe = null;
     }
 
-    cookingWorkspace = { recipeIds: [], activeRecipeId: null };
+    cookingWorkspace = CookingWorkspaceCore.normalizeWorkspace({});
+    cookingPlan = null;
+    cookingPlanError = '';
     updateCookingUI();
 
     if (!user) {
@@ -417,7 +1516,7 @@
     cookingWorkspace = CookingWorkspaceCore.normalizeWorkspace(nextWorkspace);
     updateCookingUI();
 
-    if (IS_LOCAL_COOKING_PREVIEW) {
+    if (IS_LOCAL_COOKING_PREVIEW || IS_LOCAL_V2_MOCK_PREVIEW) {
       if (successMessage) showToast(successMessage, 'success');
       return true;
     }
@@ -426,6 +1525,10 @@
       await db.collection('cookingWorkspaces').doc(currentUser.uid).set({
         recipeIds: cookingWorkspace.recipeIds,
         activeRecipeId: cookingWorkspace.activeRecipeId,
+        view: cookingWorkspace.view,
+        checkedIngredientIds: cookingWorkspace.checkedIngredientIds,
+        checkedStepIds: cookingWorkspace.checkedStepIds,
+        planCacheKey: cookingWorkspace.planCacheKey,
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       });
       if (successMessage) showToast(successMessage, 'success');
@@ -447,9 +1550,9 @@
     }
 
     const isIncluded = cookingWorkspace.recipeIds.includes(recipeId);
-    const nextWorkspace = isIncluded
+    const nextWorkspace = invalidateCookingPlan(isIncluded
       ? CookingWorkspaceCore.removeRecipe(cookingWorkspace, recipeId)
-      : CookingWorkspaceCore.addRecipe(cookingWorkspace, recipeId);
+      : CookingWorkspaceCore.addRecipe(cookingWorkspace, recipeId));
 
     if (!isIncluded && nextWorkspace.recipeIds.length === cookingWorkspace.recipeIds.length) {
       showToast(`אפשר לבשל עד ${CookingWorkspaceCore.MAX_RECIPES} מתכונים יחד`, 'info');
@@ -469,7 +1572,9 @@
   }
 
   async function removeCookingRecipe(recipeId) {
-    const nextWorkspace = CookingWorkspaceCore.removeRecipe(cookingWorkspace, recipeId);
+    const nextWorkspace = invalidateCookingPlan(
+      CookingWorkspaceCore.removeRecipe(cookingWorkspace, recipeId)
+    );
     const saved = await persistCookingWorkspace(nextWorkspace, 'המתכון הוסר מבישול עכשיו');
     if (saved && nextWorkspace.recipeIds.length === 0) closeCookingWorkspace();
   }
@@ -478,12 +1583,14 @@
     if (!currentUser) return;
 
     const previousWorkspace = cookingWorkspace;
-    cookingWorkspace = { recipeIds: [], activeRecipeId: null };
+    cookingWorkspace = CookingWorkspaceCore.normalizeWorkspace({});
+    cookingPlan = null;
+    cookingPlanError = '';
     cookingClearConfirm.hidden = true;
     updateCookingUI();
     closeCookingWorkspace();
 
-    if (IS_LOCAL_COOKING_PREVIEW) {
+    if (IS_LOCAL_COOKING_PREVIEW || IS_LOCAL_V2_MOCK_PREVIEW) {
       showToast('המטבח נקי ומוכן לפעם הבאה', 'success');
       return;
     }
@@ -500,6 +1607,9 @@
   }
 
   function getRecipePrimaryImage(recipe) {
+    const privateKey = recipe.content?.privateImageKeys?.find(Boolean);
+    const privateUrl = privateKey ? privateImageUrls.get(privateKey) : '';
+    if (privateUrl) return privateUrl;
     const uploadedImage = recipe.content?.uploadedImages?.find(Boolean);
     if (uploadedImage) return uploadedImage;
 
@@ -528,9 +1638,252 @@
     return `${imageHtml}${sourceHtml}`;
   }
 
+  function invalidateCookingPlan(workspace) {
+    cookingPlan = null;
+    cookingPlanError = '';
+    return {
+      ...workspace,
+      checkedIngredientIds: [],
+      checkedStepIds: [],
+      planCacheKey: null
+    };
+  }
+
+  function buildMockCookingPlan() {
+    const selected = getCookingRecipes();
+    const structuredRecipes = selected.map(recipe => {
+      const lines = String(recipe.content?.text || recipe.content?.transcription || '')
+        .split('\n')
+        .map(line => line.replace(/^[•\-\d.)\s]+/, '').trim())
+        .filter(line => line.length > 3)
+        .slice(0, 6);
+      return {
+        recipeId: recipe.id,
+        name: recipe.name,
+        ingredients: lines.slice(0, 3).map((text, index) => ({
+          id: `ingredient-${recipe.id}-${index}`,
+          text
+        })),
+        steps: lines.slice(3, 6).map((text, index) => ({
+          id: `step-${recipe.id}-${index}`,
+          text,
+          durationMinutes: 0,
+          active: true
+        }))
+      };
+    });
+    return {
+      recipes: structuredRecipes,
+      combinedIngredients: structuredRecipes.flatMap(recipe =>
+        recipe.ingredients.map((ingredient, index) => ({
+          id: `combined-${recipe.recipeId}-${index}`,
+          display: ingredient.text,
+          normalizedName: ingredient.text,
+          sourceIds: [ingredient.id],
+          sourceRecipeIds: [recipe.recipeId],
+          note: ''
+        }))
+      ),
+      timeline: structuredRecipes.flatMap(recipe =>
+        recipe.steps.map((step, index) => ({
+          id: `timeline-${recipe.recipeId}-${index}`,
+          recipeId: recipe.recipeId,
+          recipeName: recipe.name,
+          stepId: step.id,
+          text: step.text,
+          startsAfterMinutes: index * 5,
+          durationMinutes: step.durationMinutes,
+          active: step.active,
+          note: 'יש לאשר זמן לפי המתכון המקורי'
+        }))
+      ),
+      warnings: ['תצוגת בדיקה מקומית — התוכנית החיה תיווצר מהמתכונים באמצעות ניתוח חכם.'],
+      cacheKey: 'local-preview'
+    };
+  }
+
+  async function ensureCookingPlan() {
+    if (cookingPlan || cookingPlanLoading || !getCookingRecipes().length) return;
+    cookingPlanLoading = true;
+    cookingPlanError = '';
+    renderCookingWorkspace();
+    try {
+      const result = IS_LOCAL_V2_MOCK_PREVIEW
+        ? buildMockCookingPlan()
+        : await callImporter('/cooking-plan', {
+            recipes: getCookingRecipes().map(recipe => ({
+              id: recipe.id,
+              name: recipe.name || '',
+              text: recipe.content?.text || recipe.content?.transcription || ''
+            }))
+          });
+      cookingPlan = result;
+      cookingWorkspace = CookingWorkspaceCore.normalizeWorkspace({
+        ...cookingWorkspace,
+        planCacheKey: result.cacheKey || null
+      });
+      if (!IS_LOCAL_V2_MOCK_PREVIEW) {
+        await persistCookingWorkspace(cookingWorkspace);
+      }
+    } catch (error) {
+      console.error('Cooking plan failed:', error);
+      cookingPlanError = error.message || 'לא הצלחנו להכין את סביבת הבישול';
+    } finally {
+      cookingPlanLoading = false;
+      renderCookingWorkspace();
+    }
+  }
+
+  async function selectCookingView(view) {
+    const next = CookingWorkspaceCore.selectView(cookingWorkspace, view);
+    await persistCookingWorkspace(next);
+    if (view !== 'recipes') ensureCookingPlan();
+  }
+
+  async function toggleCookingChecklist(kind, itemId) {
+    const next = CookingWorkspaceCore.toggleChecklistItem(cookingWorkspace, kind, itemId);
+    await persistCookingWorkspace(next);
+  }
+
+  function renderCookingPlanStatus() {
+    if (cookingPlanLoading) {
+      return `
+        <div class="cooking-plan-state" role="status">
+          <span class="cooking-plan-loader" aria-hidden="true"></span>
+          <h3>מסדרים את המטבח</h3>
+          <p>קוראים את כל המתכונים ומכינים רשימה ותזמון משותפים.</p>
+        </div>
+      `;
+    }
+    if (cookingPlanError) {
+      return `
+        <div class="cooking-plan-state">
+          <h3>התוכנית לא נטענה</h3>
+          <p>${escapeHtml(cookingPlanError)}</p>
+          <button type="button" data-action="retry-cooking-plan">ניסיון נוסף</button>
+        </div>
+      `;
+    }
+    return '';
+  }
+
+  function renderCombinedIngredients() {
+    const status = renderCookingPlanStatus();
+    if (status || !cookingPlan) return status;
+    const recipeNames = Object.fromEntries(
+      getCookingRecipes().map(recipe => [recipe.id, recipe.name || 'מתכון'])
+    );
+    const checked = new Set(cookingWorkspace.checkedIngredientIds);
+    const items = cookingPlan.combinedIngredients || [];
+    return `
+      <section class="cooking-plan-view cooking-ingredients-view">
+        <header class="cooking-plan-heading">
+          <span>רשימה אחת לכל מה שמבשלים</span>
+          <h3>מרכיבים משולבים</h3>
+          <p>מרכיבים אוחדו רק כשהכמות והיחידה התאימו בבירור. סימון נשמר לחשבון שלך.</p>
+        </header>
+        ${items.length ? `
+          <div class="cooking-checklist">
+            ${items.map(item => {
+              const isChecked = checked.has(item.id);
+              const sources = (item.sourceRecipeIds || [])
+                .map(id => recipeNames[id])
+                .filter(Boolean)
+                .join(' · ');
+              return `
+                <label class="cooking-check-item ${isChecked ? 'checked' : ''}">
+                  <input
+                    type="checkbox"
+                    data-action="toggle-cooking-check"
+                    data-check-kind="ingredient"
+                    data-check-id="${escapeHtml(item.id)}"
+                    ${isChecked ? 'checked' : ''}
+                  >
+                  <span class="cooking-check-mark" aria-hidden="true"></span>
+                  <span class="cooking-check-copy">
+                    <strong>${escapeHtml(item.display)}</strong>
+                    ${sources ? `<small>${escapeHtml(sources)}</small>` : ''}
+                    ${item.note ? `<em>${escapeHtml(item.note)}</em>` : ''}
+                  </span>
+                </label>
+              `;
+            }).join('')}
+          </div>
+        ` : '<p class="cooking-plan-empty">לא נמצאו שורות מרכיבים שאפשר להציג בבטחה.</p>'}
+        ${(cookingPlan.warnings || []).length ? `
+          <div class="cooking-plan-warnings">
+            ${cookingPlan.warnings.map(warning => `<p>${escapeHtml(warning)}</p>`).join('')}
+          </div>
+        ` : ''}
+      </section>
+    `;
+  }
+
+  function renderCookingTimeline() {
+    const status = renderCookingPlanStatus();
+    if (status || !cookingPlan) return status;
+    const checked = new Set(cookingWorkspace.checkedStepIds);
+    const items = cookingPlan.timeline || [];
+    return `
+      <section class="cooking-plan-view cooking-timeline-view">
+        <header class="cooking-plan-heading">
+          <span>סדר עבודה מוצע</span>
+          <h3>ציר בישול משותף</h3>
+          <p>עבודה פעילה אינה חופפת; זמני המתנה ואפייה יכולים להתקדם במקביל.</p>
+        </header>
+        ${items.length ? `
+          <ol class="cooking-timeline">
+            ${items.map(item => {
+              const isChecked = checked.has(item.stepId);
+              const timeLabel = item.startsAfterMinutes > 0
+                ? `בעוד ${item.startsAfterMinutes} דק׳`
+                : 'מתחילים עכשיו';
+              const duration = item.durationMinutes > 0
+                ? `${item.durationMinutes} דק׳`
+                : 'ללא זמן מפורש';
+              return `
+                <li class="${isChecked ? 'checked' : ''}">
+                  <label>
+                    <input
+                      type="checkbox"
+                      data-action="toggle-cooking-check"
+                      data-check-kind="step"
+                      data-check-id="${escapeHtml(item.stepId)}"
+                      ${isChecked ? 'checked' : ''}
+                    >
+                    <span class="cooking-check-mark" aria-hidden="true"></span>
+                    <span class="cooking-timeline-time">${timeLabel}</span>
+                    <span class="cooking-timeline-copy">
+                      <small>${escapeHtml(item.recipeName || '')} · ${item.active ? 'עבודה פעילה' : 'זמן פסיבי'} · ${duration}</small>
+                      <strong>${escapeHtml(item.text)}</strong>
+                      ${item.note ? `<em>${escapeHtml(item.note)}</em>` : ''}
+                    </span>
+                  </label>
+                </li>
+              `;
+            }).join('')}
+          </ol>
+        ` : '<p class="cooking-plan-empty">אין מספיק מידע מפורש כדי לבנות ציר זמן.</p>'}
+        ${(cookingPlan.warnings || []).length ? `
+          <div class="cooking-plan-warnings">
+            ${cookingPlan.warnings.map(warning => `<p>${escapeHtml(warning)}</p>`).join('')}
+          </div>
+        ` : ''}
+      </section>
+    `;
+  }
+
   function renderCookingWorkspace() {
     const availableWorkspace = getAvailableCookingWorkspace();
     const cookingRecipes = getCookingRecipes();
+
+    document.querySelectorAll('[data-cooking-view]').forEach(button => {
+      const active = button.dataset.cookingView === availableWorkspace.view;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    cookingViewSwitcher.hidden = cookingRecipes.length === 0;
+    cookingRecipeRail.hidden = availableWorkspace.view !== 'recipes';
 
     if (!cookingRecipes.length) {
       cookingRecipeRail.innerHTML = '';
@@ -542,6 +1895,16 @@
           <button type="button" data-action="close-cooking">חזרה לספר המתכונים</button>
         </div>
       `;
+      return;
+    }
+
+    if (availableWorkspace.view === 'ingredients') {
+      cookingStage.innerHTML = renderCombinedIngredients();
+      return;
+    }
+
+    if (availableWorkspace.view === 'timeline') {
+      cookingStage.innerHTML = renderCookingTimeline();
       return;
     }
 
@@ -652,9 +2015,11 @@
       const isSelected = selectedIds.has(button.dataset.recipeId);
       button.classList.toggle('selected', isSelected);
       button.setAttribute('aria-pressed', String(isSelected));
-      button.title = isSelected ? 'הסרה מבישול עכשיו' : 'הוספה לבישול עכשיו';
+      button.title = isSelected
+        ? (appLanguage === 'en' ? 'Remove from cooking now' : 'הסרה מבישול עכשיו')
+        : (appLanguage === 'en' ? 'Add to cooking now' : 'הוספה לבישול עכשיו');
       const label = button.querySelector('.cooking-action-label');
-      if (label) label.textContent = isSelected ? 'בבישול עכשיו' : 'לבישול עכשיו';
+      if (label) label.textContent = isSelected ? ui('cookingActive') : ui('cookingNow');
     });
   }
 
@@ -693,6 +2058,7 @@
     document.body.classList.add('cooking-workspace-open');
     document.body.style.overflow = 'hidden';
     updateCookingUI();
+    if (cookingWorkspace.view !== 'recipes') ensureCookingPlan();
     cookingStage.focus({ preventScroll: true });
   }
 
@@ -730,6 +2096,8 @@
     // Setup theme first (before any UI renders)
     initTheme();
     setupThemeToggle();
+    initLanguage();
+    setupLanguageToggle();
 
     // Setup auth (non-blocking)
     setupAuth();
@@ -757,6 +2125,7 @@
     if (cached && cacheAge < 5 * 60 * 1000) { // Cache valid for 5 minutes
       try {
         recipes = JSON.parse(cached);
+        applyLocalV2PreviewMetadata();
         if (recipes && recipes.length > 0) {
           renderTagFilters();
           renderRecipes();
@@ -793,6 +2162,7 @@
       if (cached) {
         try {
           recipes = JSON.parse(cached);
+          applyLocalV2PreviewMetadata();
           if (recipes && recipes.length > 0) {
             console.log('Using expired cache as fallback');
             showStaleBanner();
@@ -813,6 +2183,7 @@
           if (data.recipes && data.recipes.length > 0) {
             console.log('Using recipes.json as fallback');
             recipes = data.recipes;
+            applyLocalV2PreviewMetadata();
             isOfflineMode = true;
             canEdit = false; // Disable editing in offline mode
             showOfflineBanner();
@@ -863,6 +2234,7 @@
       console.log(`[Firestore] Data source: ${fromCache ? 'CACHE' : 'SERVER'}`);
 
       recipes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyLocalV2PreviewMetadata();
       console.log(`[Firestore] Loaded ${recipes.length} recipes`);
 
       // Sort client-side (faster than waiting for Firestore index)
@@ -874,6 +2246,7 @@
 
       // Cache for next load
       updateRecipesCache();
+      refreshPrivateImageUrls();
     } catch (error) {
       const elapsed = Date.now() - startTime;
       console.error(`[Firestore] Failed after ${elapsed}ms:`, error.code, error.message);
@@ -890,6 +2263,30 @@
     } catch (e) {
       // localStorage might be full or unavailable, ignore
     }
+  }
+
+  function applyLocalV2PreviewMetadata() {
+    if (!IS_LOCAL_V2_MOCK_PREVIEW) return;
+    recipes = recipes.map(recipe => {
+      if (recipe.ownerUid) return recipe;
+      const ownerKey = (recipe.tags || []).includes('einav') ? 'einav' : 'tal';
+      const ownerUid = ownerKey === 'einav' ? 'einav-preview' : 'tal-preview';
+      return {
+        ...recipe,
+        schemaVersion: CookbookV2Core.RECIPE_SCHEMA_VERSION,
+        ownerUid,
+        homeKitchenId: `personal_${ownerUid}`,
+        sharedKitchenIds: ['schreiber'],
+        editorUids: ['tal-preview', 'einav-preview'],
+        visibility: 'public',
+        author: {
+          uid: ownerUid,
+          username: ownerKey,
+          firstName: ownerKey === 'einav' ? 'עינב' : 'טל'
+        }
+      };
+    });
+    favoriteIds = new Set(recipes.slice(0, 4).map(recipe => recipe.id));
   }
 
   // Show/hide loading
@@ -971,7 +2368,7 @@
     categoriesNav.innerHTML = `
       <button class="category-btn main-cat ${currentMainCategory === 'all' ? 'active' : ''}" data-main-category="all">
         <span class="category-icon">📚</span>
-        <span class="category-name">הכל</span>
+        <span class="category-name">${ui('all')}</span>
       </button>
     `;
 
@@ -981,7 +2378,7 @@
       btn.dataset.mainCategory = cat.id;
       btn.innerHTML = `
         <span class="category-icon">${cat.icon}</span>
-        <span class="category-name">${cat.name}</span>
+        <span class="category-name">${localizedCategoryName(cat)}</span>
       `;
       categoriesNav.appendChild(btn);
     });
@@ -1008,7 +2405,7 @@
     subCatNav.style.display = 'flex';
     subCatNav.innerHTML = `
       <button class="sub-category-btn ${currentSubCategory === 'all' ? 'active' : ''}" data-sub-category="all">
-        הכל
+        ${ui('all')}
       </button>
     `;
 
@@ -1017,7 +2414,7 @@
       const btn = document.createElement('button');
       btn.className = `sub-category-btn ${currentSubCategory === cat.id ? 'active' : ''}`;
       btn.dataset.subCategory = cat.id;
-      btn.innerHTML = `${cat.icon} ${cat.name}`;
+      btn.innerHTML = `${cat.icon} ${localizedCategoryName(cat)}`;
       subCatNav.appendChild(btn);
     });
   }
@@ -1105,11 +2502,26 @@
     // Show tags that have at least one recipe OR are marked as alwaysShow
     const tagsToShow = AVAILABLE_TAGS.filter(tag => tagCounts[tag.id] > 0 || tag.alwaysShow);
 
-    container.innerHTML = tagsToShow.map(tag => `
+    const favoritesPill = COOKBOOK_V2_ENABLED && currentUser
+      ? `
+        <button
+          class="tag-filter-pill system-favorite ${favoritesFilterActive ? 'active' : ''}"
+          data-system-filter="favorites"
+          aria-pressed="${favoritesFilterActive}"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m12 3 2.7 5.48 6.05.88-4.38 4.27 1.03 6.03L12 16.82l-5.4 2.84 1.03-6.03-4.38-4.27 6.05-.88L12 3Z"/>
+          </svg>
+          ${ui('favorites')} <span class="tag-count">(${favoriteIds.size})</span>
+        </button>
+      `
+      : '';
+
+    container.innerHTML = favoritesPill + tagsToShow.map(tag => `
       <button class="tag-filter-pill ${currentTags.includes(tag.id) ? 'active' : ''}"
               data-tag="${tag.id}"
               style="--tag-color: ${tag.color}">
-        ${tag.icon} ${tag.name} <span class="tag-count">(${tagCounts[tag.id]})</span>
+        ${tag.icon} ${localizedTagName(tag)} <span class="tag-count">(${tagCounts[tag.id]})</span>
       </button>
     `).join('');
   }
@@ -1136,6 +2548,28 @@
   // Get filtered recipes
   function getFilteredRecipes() {
     return recipes.filter(recipe => {
+      if (
+        COOKBOOK_V2_ENABLED &&
+        !CookbookV2Core.canViewRecipe(recipe, getViewerContext())
+      ) {
+        return false;
+      }
+
+      const libraryMatch = !COOKBOOK_V2_ENABLED || CookbookV2Core.recipeMatchesLibrary(
+        recipe,
+        {
+          scope: selectedLibraryKitchenId ? 'kitchen' : currentLibraryScope,
+          kitchenId: selectedLibraryKitchenId,
+          uid: currentUser?.uid,
+          favoriteIds,
+          recipeAccessIds,
+          kitchenRoles
+        }
+      );
+
+      if (!libraryMatch) return false;
+      if (favoritesFilterActive && !favoriteIds.has(recipe.id)) return false;
+
       // Main category match
       let mainCatMatch = currentMainCategory === 'all';
       if (!mainCatMatch) {
@@ -1177,36 +2611,38 @@
     const filtered = getFilteredRecipes();
 
     if (
-      IS_LOCAL_COOKING_PREVIEW &&
+      (IS_LOCAL_COOKING_PREVIEW || IS_LOCAL_V2_MOCK_PREVIEW) &&
       !hasSeededCookingPreview &&
       recipes.length >= 3
     ) {
-      cookingWorkspace = {
+      cookingWorkspace = CookingWorkspaceCore.normalizeWorkspace({
         recipeIds: recipes.slice(0, 3).map(recipe => recipe.id),
         activeRecipeId: recipes[0].id
-      };
+      });
       hasSeededCookingPreview = true;
     }
 
     // Build category name for display
     let categoryName = '';
     if (currentMainCategory === 'all') {
-      categoryName = 'הכל';
+      categoryName = ui('all');
     } else {
       const mainCat = MAIN_CATEGORIES.find(c => c.id === currentMainCategory);
-      categoryName = mainCat?.name || '';
+      categoryName = localizedCategoryName(mainCat);
       if (currentSubCategory !== 'all') {
         const subCat = (SUB_CATEGORIES[currentMainCategory] || []).find(c => c.id === currentSubCategory);
-        if (subCat) categoryName = subCat.name;
+        if (subCat) categoryName = localizedCategoryName(subCat);
       }
     }
-    recipeCount.textContent = `${filtered.length} מתכונים ${categoryName ? 'ב' + categoryName : ''}`;
+    recipeCount.textContent = appLanguage === 'en'
+      ? `${filtered.length} ${ui('recipes')}${categoryName ? ` in ${categoryName}` : ''}`
+      : `${filtered.length} מתכונים ${categoryName ? 'ב' + categoryName : ''}`;
 
     if (filtered.length === 0) {
       recipesContainer.innerHTML = `
         <div class="empty-state">
           <div class="empty-state-icon">🔍</div>
-          <p class="empty-state-text">לא נמצאו מתכונים</p>
+          <p class="empty-state-text">${appLanguage === 'en' ? 'No recipes found' : 'לא נמצאו מתכונים'}</p>
         </div>
       `;
       updateCookingUI();
@@ -1224,24 +2660,56 @@
       const type = typeInfo[recipe.type] || typeInfo.link;
       const hasLocalImage = recipe.content?.images && recipe.content.images.length > 0;
       const hasUploadedImage = recipe.content?.uploadedImages && recipe.content.uploadedImages.length > 0;
+      const privateImageKey = recipe.content?.privateImageKeys?.find(Boolean);
+      const privateImageUrl = privateImageKey ? privateImageUrls.get(privateImageKey) : '';
       const localImageFile = hasLocalImage ? recipe.content.images[0] : null;
       const uploadedImageUrl = hasUploadedImage ? recipe.content.uploadedImages[0] : null;
       const isDocx = localImageFile && localImageFile.endsWith('.docx');
 
       // Get tags
       const recipeTags = recipe.tags || autoTagRecipe(recipe);
-      const tagHtml = recipeTags.slice(0, 3).map(tagId => {
-        const tag = AVAILABLE_TAGS.find(t => t.id === tagId);
-        return tag ? `<span class="recipe-tag-pill" style="background: ${tag.color}20; color: ${tag.color};" title="${tag.name}">${tag.icon}</span>` : '';
-      }).join('');
+      const visibleTags = recipeTags
+        .map(tagId => AVAILABLE_TAGS.find(tag => tag.id === tagId))
+        .filter(Boolean);
+      const tagHtml = visibleTags.slice(0, 2).map(tag => {
+        return `<span class="recipe-tag-pill" title="${escapeHtml(localizedTagName(tag))}">${escapeHtml(localizedTagName(tag))}</span>`;
+      }).join('') + (visibleTags.length > 2
+        ? `<span class="recipe-tag-more">+${visibleTags.length - 2}</span>`
+        : '');
+      const authorUsername = recipe.author?.username || '';
+      const originHtml = COOKBOOK_V2_ENABLED && authorUsername
+        ? `<div class="recipe-origin-line">מאת @${escapeHtml(authorUsername)}</div>`
+        : '';
+      const provenanceHtml = COOKBOOK_V2_ENABLED && recipe.provenance?.kind === 'copy'
+        ? `<div class="recipe-provenance">עותק מ־@${escapeHtml(recipe.provenance.sourceUsername || 'המקור')}</div>`
+        : '';
+      const favoriteHtml = COOKBOOK_V2_ENABLED && currentUser
+        ? `
+          <button
+            class="favorite-button ${favoriteIds.has(recipe.id) ? 'active' : ''}"
+            type="button"
+            data-action="toggle-favorite"
+            data-recipe-id="${escapeHtml(recipe.id)}"
+            aria-pressed="${favoriteIds.has(recipe.id)}"
+            aria-label="${favoriteIds.has(recipe.id) ? 'הסרה מהמועדפים' : 'הוספה למועדפים'}"
+            title="${favoriteIds.has(recipe.id) ? 'הסרה מהמועדפים' : 'הוספה למועדפים'}"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m12 3 2.7 5.48 6.05.88-4.38 4.27 1.03 6.03L12 16.82l-5.4 2.84 1.03-6.03-4.38-4.27 6.05-.88L12 3Z"/>
+            </svg>
+          </button>
+        `
+        : '';
 
       // Build category display: "Main > Sub" format
       const categoryDisplay = mainCat && subCat
-        ? `${mainCat.icon} ${mainCat.name} › ${subCat.name}`
-        : (subCat ? `${subCat.icon} ${subCat.name}` : '');
+        ? `${localizedCategoryName(mainCat)} · ${localizedCategoryName(subCat)}`
+        : (subCat ? localizedCategoryName(subCat) : '');
 
       let imageHtml;
-      if (uploadedImageUrl) {
+      if (privateImageUrl) {
+        imageHtml = `<img src="${escapeHtml(privateImageUrl)}" alt="${escapeHtml(recipe.name || '')}" class="recipe-image" loading="lazy">`;
+      } else if (uploadedImageUrl) {
         imageHtml = `<img src="${uploadedImageUrl}" alt="${recipe.name}" class="recipe-image" loading="lazy" onerror="this.classList.add('placeholder'); this.outerHTML='<div class=\\'recipe-image placeholder\\'>${mainCat?.icon || '🍽️'}</div>';">`;
       } else if (hasLocalImage && !isDocx) {
         imageHtml = `<img src="images/${localImageFile}" alt="${recipe.name}" class="recipe-image" loading="lazy" onerror="this.classList.add('placeholder'); this.outerHTML='<div class=\\'recipe-image placeholder\\'>${mainCat?.icon || '🍽️'}</div>';">`;
@@ -1250,29 +2718,32 @@
       }
 
       return `
-        <article class="recipe-card" data-id="${recipe.id}">
+        <article class="recipe-card ${COOKBOOK_V2_ENABLED ? 'has-v2-controls' : ''}" data-id="${escapeHtml(recipe.id)}">
           ${imageHtml}
+          ${favoriteHtml}
           <button
             class="cooking-card-add"
             type="button"
             data-action="toggle-cooking"
             data-recipe-id="${escapeHtml(recipe.id)}"
             aria-pressed="false"
-            title="הוספה לבישול עכשיו"
+            title="${appLanguage === 'en' ? 'Add to cooking now' : 'הוספה לבישול עכשיו'}"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path class="cooking-icon-pot" d="M5 11.5h14M7 11.5v-1a5 5 0 0 1 10 0v1M4 11.5v1.25A5.25 5.25 0 0 0 9.25 18h5.5A5.25 5.25 0 0 0 20 12.75V11.5M12 5.5V4"/>
               <path class="cooking-icon-check" d="m7.5 12.5 3 3 6-7"/>
             </svg>
-            <span class="cooking-action-label">לבישול עכשיו</span>
+            <span class="cooking-action-label">${ui('cookingNow')}</span>
           </button>
           <div class="recipe-info">
-            <h2 class="recipe-name">${recipe.name}</h2>
+            <h2 class="recipe-name">${escapeHtml(recipe.name || '')}</h2>
+            ${originHtml}
             <div class="recipe-meta">
-              <span class="recipe-tag type-${recipe.type}">${type.icon} ${type.label}</span>
+              <span class="recipe-tag type-${recipe.type}">${ui(recipe.type) || type.label}</span>
               <span class="recipe-tag category-hierarchy">${categoryDisplay}</span>
             </div>
             ${tagHtml ? `<div class="recipe-tags">${tagHtml}</div>` : ''}
+            ${provenanceHtml}
           </div>
         </article>
       `;
@@ -1286,10 +2757,25 @@
     if (!recipe) return;
 
     currentRecipeId = id;
+    const recipeCanEdit = canEditRecipeNow(recipe);
     const category = categories.find(c => c.id === recipe.category);
     const date = formatDate(recipe.date);
 
     let contentHtml = '';
+
+    const privateImageKeys = recipe.content?.privateImageKeys || [];
+    const privateImages = privateImageKeys
+      .map(key => privateImageUrls.get(key))
+      .filter(Boolean);
+    if (privateImages.length === 1) {
+      contentHtml += `<img src="${escapeHtml(privateImages[0])}" alt="${escapeHtml(recipe.name || '')}" class="modal-image">`;
+    } else if (privateImages.length > 1) {
+      contentHtml += `
+        <div class="images-gallery">
+          ${privateImages.map(image => `<img src="${escapeHtml(image)}" alt="${escapeHtml(recipe.name || '')}">`).join('')}
+        </div>
+      `;
+    }
 
     // Uploaded Images (from Firebase Storage)
     if (recipe.content?.uploadedImages && recipe.content.uploadedImages.length > 0) {
@@ -1328,10 +2814,21 @@
     const recipeText = recipe.content?.text || recipe.content?.transcription;
     if (recipeText) {
       contentHtml += `
-        <div class="transcription-box" style="width: 100%; margin-bottom: 12px;">
-          <h4>📝 טקסט המתכון</h4>
-          <p>${escapeHtml(recipeText)}</p>
-          ${canEdit ? `<button class="add-transcription-btn" data-action="edit-transcription" style="margin-top: 12px; background: #64748b;">
+        <div class="transcription-box recipe-reading-box" style="width: 100%; margin-bottom: 12px;">
+          <div class="recipe-reading-header">
+            <h4 id="recipe-text-heading">${appLanguage === 'en' ? 'Recipe text' : 'טקסט המתכון'}</h4>
+            <div class="recipe-language-toggle" role="group" aria-label="${appLanguage === 'en' ? 'Recipe language' : 'שפת המתכון'}">
+              <button type="button" class="${appLanguage === 'he' ? 'active' : ''}" data-action="set-recipe-language" data-language="he" aria-pressed="${appLanguage === 'he'}">
+                ${appLanguage === 'en' ? 'Original' : 'מקור'}
+              </button>
+              <button type="button" class="${appLanguage === 'en' ? 'active' : ''}" data-action="set-recipe-language" data-language="en" aria-pressed="${appLanguage === 'en'}">
+                English
+              </button>
+            </div>
+          </div>
+          <p id="recipe-text-content" dir="auto">${escapeHtml(recipeText)}</p>
+          <div class="recipe-translation-status" id="recipe-translation-status" aria-live="polite"></div>
+          ${recipeCanEdit ? `<button class="add-transcription-btn" data-action="edit-transcription" style="margin-top: 12px; background: #64748b;">
             ✏️ ערוך טקסט
           </button>` : ''}
         </div>
@@ -1360,7 +2857,7 @@
     // Extraction is available for both website links and social/video posts.
     // Keep it visible when text already exists so a weak extraction can be rerun.
     if (
-      canEdit &&
+      recipeCanEdit &&
       recipe.content?.url &&
       (recipe.type === 'link' || recipe.type === 'video')
     ) {
@@ -1384,7 +2881,7 @@
 
     // Show manual add-text button only if no text exists
     if (!recipeText) {
-      if (canEdit) {
+      if (recipeCanEdit) {
         contentHtml += `
           <button class="add-transcription-btn" data-action="add-transcription">
             📝 הוסף טקסט מתכון
@@ -1394,10 +2891,10 @@
     }
 
     // Edit tags button (only if can edit)
-    if (canEdit) {
+    if (recipeCanEdit) {
       contentHtml += `
         <button class="add-image-btn" data-action="edit-image">
-          ▧ ${recipe.content?.uploadedImages?.length ? 'החלף תמונה' : 'הוסף תמונה'}
+          ▧ ${(recipe.content?.uploadedImages?.length || recipe.content?.privateImageKeys?.length) ? 'החלף תמונה' : 'הוסף תמונה'}
         </button>
         <button class="edit-tags-btn" data-action="edit-tags">
           🏷️ ערוך תגיות
@@ -1410,15 +2907,45 @@
 
     contentHtml += `</div>`;
 
+    if (COOKBOOK_V2_ENABLED && currentUser) {
+      const isOwner = recipe.ownerUid === currentUser.uid;
+      const sourceUsername = recipe.provenance?.sourceUsername || '';
+      if (sourceUsername) {
+        contentHtml += `
+          <div class="recipe-provenance">עותק מ־@${escapeHtml(sourceUsername)}</div>
+        `;
+      }
+      contentHtml += `
+        <div class="recipe-v2-actions">
+          ${recipeCanEdit ? `
+            <button
+              type="button"
+              class="recipe-v2-action"
+              data-action="share-recipe"
+              data-recipe-id="${escapeHtml(recipe.id)}"
+            >שיתוף</button>
+          ` : ''}
+          ${!isOwner && canCopyRecipeNow(recipe) ? `
+            <button
+              type="button"
+              class="recipe-v2-action"
+              data-action="copy-recipe"
+              data-recipe-id="${escapeHtml(recipe.id)}"
+            >יצירת עותק במטבח שלי</button>
+          ` : ''}
+        </div>
+      `;
+    }
+
     // Display current tags
     const recipeTags = recipe.tags || autoTagRecipe(recipe);
     if (recipeTags.length > 0) {
       contentHtml += `
         <div class="recipe-tags-display">
-          <span class="tags-label">תגיות:</span>
+            <span class="tags-label">${appLanguage === 'en' ? 'Tags:' : 'תגיות:'}</span>
           ${recipeTags.map(tagId => {
             const tag = AVAILABLE_TAGS.find(t => t.id === tagId);
-            return tag ? `<span class="tag-display-pill" style="background: ${tag.color}20; color: ${tag.color};">${tag.icon} ${tag.name}</span>` : '';
+            return tag ? `<span class="tag-display-pill">${escapeHtml(localizedTagName(tag))}</span>` : '';
           }).join('')}
         </div>
       `;
@@ -1457,9 +2984,97 @@
       ${contentHtml}
     `;
 
+    modalDelete.classList.toggle('hidden', !recipeCanEdit);
     modal.classList.add('active');
     document.body.style.overflow = 'hidden';
     updateCookingControls();
+    if (recipeText && appLanguage === 'en') {
+      showRecipeLanguage(recipe.id, 'en');
+    }
+  }
+
+  async function showRecipeLanguage(recipeId, language) {
+    const recipe = recipes.find(item => item.id === recipeId);
+    const textElement = document.getElementById('recipe-text-content');
+    const titleElement = modalBody.querySelector('.modal-title');
+    const statusElement = document.getElementById('recipe-translation-status');
+    if (!recipe || !textElement || currentRecipeId !== recipeId) return;
+
+    document.querySelectorAll('.recipe-language-toggle button').forEach(button => {
+      const active = button.dataset.language === language;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+
+    const sourceText = recipe.content?.text || recipe.content?.transcription || '';
+    if (language !== 'en') {
+      textElement.textContent = sourceText;
+      textElement.dir = 'auto';
+      if (titleElement) titleElement.textContent = recipe.name || '';
+      if (statusElement) statusElement.textContent = '';
+      return;
+    }
+
+    if (!currentUser) {
+      showToast(appLanguage === 'en' ? 'Sign in to translate recipes' : 'התחברו כדי לתרגם מתכונים', 'info');
+      openAuthModal();
+      return;
+    }
+
+    const cached = translationCache.get(recipeId);
+    if (cached) {
+      textElement.textContent = cached.text || sourceText;
+      textElement.dir = 'ltr';
+      if (titleElement) titleElement.textContent = cached.title || recipe.name || '';
+      if (statusElement) statusElement.textContent = '';
+      return;
+    }
+    if (translationLoadingIds.has(recipeId)) return;
+
+    translationLoadingIds.add(recipeId);
+    textElement.classList.add('translation-loading');
+    if (statusElement) {
+      statusElement.textContent = appLanguage === 'en'
+        ? 'Translating carefully…'
+        : 'מתרגמים בקפידה…';
+    }
+    try {
+      const translation = IS_LOCAL_V2_MOCK_PREVIEW
+        ? {
+            title: `${recipe.name || 'Recipe'} — English preview`,
+            text: 'English preview\n\nThe production service translates every ingredient, quantity, temperature, and instruction while preserving the original structure.'
+          }
+        : await callImporter('/translate', {
+            recipeId,
+            title: recipe.name || '',
+            text: sourceText
+          });
+      translationCache.set(recipeId, translation);
+      if (currentRecipeId === recipeId) {
+        textElement.textContent = translation.text || sourceText;
+        textElement.dir = 'ltr';
+        if (titleElement) titleElement.textContent = translation.title || recipe.name || '';
+        if (statusElement) {
+          statusElement.textContent = translation.cached
+            ? (appLanguage === 'en' ? 'Saved translation' : 'תרגום שמור')
+            : '';
+        }
+      }
+    } catch (error) {
+      console.error('Recipe translation failed:', error);
+      if (statusElement) {
+        statusElement.textContent = appLanguage === 'en'
+          ? 'Translation is unavailable right now.'
+          : 'התרגום אינו זמין כרגע.';
+      }
+      showToast(
+        appLanguage === 'en' ? 'Could not translate this recipe' : 'לא הצלחנו לתרגם את המתכון',
+        'error'
+      );
+    } finally {
+      translationLoadingIds.delete(recipeId);
+      textElement.classList.remove('translation-loading');
+    }
   }
 
   // Known recipe websites with branding
@@ -1639,13 +3254,11 @@
 
   // Delete recipe
   async function deleteRecipe(id) {
-    if (!canEdit) {
+    const recipe = recipes.find(r => r.id === id);
+    if (!recipe || !canEditRecipeNow(recipe)) {
       showToast('אין לך הרשאה למחוק מתכונים. התחבר עם חשבון מורשה.', 'error');
       return;
     }
-
-    const recipe = recipes.find(r => r.id === id);
-    if (!recipe) return;
 
     document.getElementById('delete-recipe-name').textContent = recipe.name;
     deleteModal.classList.add('active');
@@ -1653,6 +3266,8 @@
 
   async function confirmDelete() {
     if (!currentRecipeId) return;
+    const recipe = recipes.find(item => item.id === currentRecipeId);
+    if (!recipe || !canEditRecipeNow(recipe)) return;
 
     try {
       await db.collection('recipes').doc(currentRecipeId).delete();
@@ -1698,8 +3313,17 @@
       // Reserve the Firestore ID before uploading so the image path is stable.
       const docRef = db.collection('recipes').doc();
       if (formData.image) {
-        const storedImage = await uploadRecipeImage(docRef.id, formData.image);
-        formData.content.uploadedImages = [storedImage.url];
+        const storedImage = await uploadRecipeImage(
+          docRef.id,
+          formData.image,
+          COOKBOOK_V2_ENABLED
+        );
+        if (storedImage.protected && storedImage.privateKey) {
+          formData.content.privateImageKeys = [storedImage.privateKey];
+          privateImageUrls.set(storedImage.privateKey, storedImage.url);
+        } else {
+          formData.content.uploadedImages = [storedImage.url];
+        }
       }
 
       const newRecipe = {
@@ -1711,11 +3335,26 @@
         content: formData.content,
         notes: formData.notes || '',
         tags: autoTags,
-        addedBy: currentUser?.email || null
+        addedBy: currentUser?.email || null,
+        ...(COOKBOOK_V2_ENABLED && userProfile?.onboardingComplete ? {
+          schemaVersion: CookbookV2Core.RECIPE_SCHEMA_VERSION,
+          ownerUid: currentUser.uid,
+          homeKitchenId: userProfile.personalKitchenId,
+          sharedKitchenIds: [],
+          visibility: 'private',
+          author: {
+            uid: currentUser.uid,
+            username: userProfile.username,
+            firstName: userProfile.firstName
+          },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        } : {})
       };
 
       await docRef.set(newRecipe);
       newRecipe.id = docRef.id;
+      if (COOKBOOK_V2_ENABLED) await applyFutureSharePoliciesToRecipe(newRecipe);
 
       // Update local state
       recipes.unshift(newRecipe);
@@ -2231,15 +3870,18 @@
     return result;
   }
 
-  async function uploadRecipeImage(recipeId, image) {
+  async function uploadRecipeImage(recipeId, image, isPrivate = false) {
     return callImporter('/images', {
       recipeId,
+      private: Boolean(isPrivate),
       ...(image.dataUrl ? { dataUrl: image.dataUrl } : { sourceUrl: image.sourceUrl })
     });
   }
 
   function openEditImageModal() {
-    if (!canEdit || !currentRecipeId) return;
+    if (!currentRecipeId) return;
+    const recipe = recipes.find(item => item.id === currentRecipeId);
+    if (!recipe || !canEditRecipeNow(recipe)) return;
     editingRecipeImage = null;
     editRecipeImageInput.value = '';
     editImagePreview.hidden = true;
@@ -2277,10 +3919,10 @@
   }
 
   async function saveEditedRecipeImage() {
-    if (!currentRecipeId || !editingRecipeImage || !canEdit) return;
+    if (!currentRecipeId || !editingRecipeImage) return;
     const recipeId = currentRecipeId;
     const recipe = recipes.find(item => item.id === recipeId);
-    if (!recipe) return;
+    if (!recipe || !canEditRecipeNow(recipe)) return;
 
     const btnText = saveEditImageBtn.querySelector('.btn-text');
     const btnLoading = saveEditImageBtn.querySelector('.btn-loading');
@@ -2289,12 +3931,23 @@
     saveEditImageBtn.disabled = true;
 
     try {
-      const stored = await uploadRecipeImage(recipeId, editingRecipeImage);
+      const usePrivateStorage = COOKBOOK_V2_ENABLED && recipe.visibility !== 'public';
+      const stored = await uploadRecipeImage(recipeId, editingRecipeImage, usePrivateStorage);
       if (!recipe.content) recipe.content = {};
-      recipe.content.uploadedImages = [stored.url];
-      await db.collection('recipes').doc(recipeId).update({
-        'content.uploadedImages': [stored.url]
-      });
+      if (stored.protected && stored.privateKey) {
+        recipe.content.privateImageKeys = [stored.privateKey];
+        recipe.content.uploadedImages = [];
+        privateImageUrls.set(stored.privateKey, stored.url);
+        await db.collection('recipes').doc(recipeId).update({
+          'content.privateImageKeys': [stored.privateKey],
+          'content.uploadedImages': []
+        });
+      } else {
+        recipe.content.uploadedImages = [stored.url];
+        await db.collection('recipes').doc(recipeId).update({
+          'content.uploadedImages': [stored.url]
+        });
+      }
       updateRecipesCache();
       renderRecipes();
       closeEditImageModal();
@@ -2427,6 +4080,13 @@
       const btn = e.target.closest('.tag-filter-pill');
       if (!btn) return;
 
+      if (btn.dataset.systemFilter === 'favorites') {
+        favoritesFilterActive = !favoritesFilterActive;
+        renderTagFilters();
+        renderRecipes();
+        return;
+      }
+
       const tagId = btn.dataset.tag;
       if (currentTags.includes(tagId)) {
         currentTags = currentTags.filter(t => t !== tagId);
@@ -2439,6 +4099,13 @@
 
     // Recipe cards
     recipesContainer.addEventListener('click', (e) => {
+      const favoriteButton = e.target.closest('[data-action="toggle-favorite"]');
+      if (favoriteButton) {
+        e.stopPropagation();
+        toggleFavorite(favoriteButton.dataset.recipeId);
+        return;
+      }
+
       const cookingButton = e.target.closest('[data-action="toggle-cooking"]');
       if (cookingButton) {
         e.stopPropagation();
@@ -2672,6 +4339,12 @@
         extractRecipeFromUrl();
       } else if (action === 'toggle-cooking') {
         toggleCookingRecipe(btn.dataset.recipeId);
+      } else if (action === 'share-recipe') {
+        openShareRecipeModal(btn.dataset.recipeId);
+      } else if (action === 'copy-recipe') {
+        copyRecipeToPersonalKitchen(btn.dataset.recipeId);
+      } else if (action === 'set-recipe-language') {
+        showRecipeLanguage(currentRecipeId, btn.dataset.language);
       }
     });
 
@@ -2692,6 +4365,12 @@
       if (recipeButton) selectCookingRecipe(recipeButton.dataset.cookingRecipeId);
     });
 
+    cookingViewSwitcher.addEventListener('click', (e) => {
+      const viewButton = e.target.closest('[data-cooking-view]');
+      if (!viewButton) return;
+      selectCookingView(viewButton.dataset.cookingView);
+    });
+
     cookingStage.addEventListener('click', (e) => {
       const actionButton = e.target.closest('[data-action]');
       if (!actionButton) return;
@@ -2700,6 +4379,15 @@
         removeCookingRecipe(actionButton.dataset.recipeId);
       } else if (actionButton.dataset.action === 'close-cooking') {
         closeCookingWorkspace();
+      } else if (actionButton.dataset.action === 'toggle-cooking-check') {
+        toggleCookingChecklist(
+          actionButton.dataset.checkKind,
+          actionButton.dataset.checkId
+        );
+      } else if (actionButton.dataset.action === 'retry-cooking-plan') {
+        cookingPlan = null;
+        cookingPlanError = '';
+        ensureCookingPlan();
       }
     });
 
@@ -2818,6 +4506,79 @@
     authModal.addEventListener('click', (e) => {
       if (e.target === authModal) closeAuthModal();
     });
+
+    if (COOKBOOK_V2_ENABLED) {
+      libraryToolbar.addEventListener('click', (e) => {
+        const button = e.target.closest('[data-library-scope]');
+        if (!button) return;
+        currentLibraryScope = button.dataset.libraryScope;
+        selectedLibraryKitchenId = '';
+        libraryKitchenSelect.value = '';
+        renderV2Chrome();
+        renderRecipes();
+      });
+
+      libraryKitchenSelect.addEventListener('change', (e) => {
+        selectedLibraryKitchenId = e.target.value;
+        if (selectedLibraryKitchenId) currentLibraryScope = 'all';
+        renderV2Chrome();
+        renderRecipes();
+      });
+
+      onboardingForm.addEventListener('submit', saveV2Profile);
+      document.getElementById('onboarding-signout').addEventListener('click', signOut);
+      document.getElementById('edit-profile-btn').addEventListener('click', () => {
+        closeAuthModal();
+        openOnboardingModal(true);
+      });
+
+      document.getElementById('create-kitchen-btn').addEventListener('click', openCreateKitchenModal);
+      createKitchenForm.addEventListener('submit', createSharedKitchen);
+      document.getElementById('create-kitchen-close').addEventListener('click', closeCreateKitchenModal);
+      document.getElementById('create-kitchen-cancel').addEventListener('click', closeCreateKitchenModal);
+      createKitchenModal.addEventListener('click', (e) => {
+        if (e.target === createKitchenModal) closeCreateKitchenModal();
+      });
+
+      inviteKitchenForm.addEventListener('submit', inviteToKitchen);
+      document.getElementById('invite-kitchen-close').addEventListener('click', closeInviteKitchenModal);
+      document.getElementById('invite-kitchen-cancel').addEventListener('click', closeInviteKitchenModal);
+      inviteKitchenModal.addEventListener('click', (e) => {
+        if (e.target === inviteKitchenModal) closeInviteKitchenModal();
+      });
+
+      document.getElementById('account-kitchen-list').addEventListener('click', (e) => {
+        const action = e.target.closest('[data-action]');
+        if (!action) return;
+        if (action.dataset.action === 'invite-kitchen') {
+          openInviteKitchenModal(action.dataset.kitchenId);
+        } else if (action.dataset.action === 'open-kitchen') {
+          selectedLibraryKitchenId = action.dataset.kitchenId;
+          currentLibraryScope = 'all';
+          closeAuthModal();
+          renderV2Chrome();
+          renderRecipes();
+        }
+      });
+
+      document.getElementById('account-invitation-list').addEventListener('click', (e) => {
+        const action = e.target.closest('[data-action]');
+        if (!action) return;
+        if (action.dataset.action === 'accept-invitation') {
+          acceptInvitation(action.dataset.invitationId);
+        } else if (action.dataset.action === 'decline-invitation') {
+          declineInvitation(action.dataset.invitationId);
+        }
+      });
+
+      shareRecipeForm.addEventListener('submit', shareRecipes);
+      document.getElementById('share-scope-type').addEventListener('change', populateShareScopeValues);
+      document.getElementById('share-recipe-close').addEventListener('click', closeShareRecipeModal);
+      document.getElementById('share-recipe-cancel').addEventListener('click', closeShareRecipeModal);
+      shareRecipeModal.addEventListener('click', (e) => {
+        if (e.target === shareRecipeModal) closeShareRecipeModal();
+      });
+    }
   }
 
   // Transcription modal functions
@@ -2838,8 +4599,8 @@
 
   async function saveTranscription() {
     if (!currentRecipeId) return;
-
-    if (!canEdit) {
+    const recipe = recipes.find(r => r.id === currentRecipeId);
+    if (!recipe || !canEditRecipeNow(recipe)) {
       showToast('אין לך הרשאה לערוך מתכונים', 'error');
       return;
     }
@@ -2860,7 +4621,6 @@
 
     try {
       // Update in Firestore (use content.text as the unified field)
-      const recipe = recipes.find(r => r.id === currentRecipeId);
       if (!recipe.content) recipe.content = {};
       recipe.content.text = text;
 
@@ -2926,8 +4686,8 @@
 
   async function saveEditedTags() {
     if (!currentRecipeId) return;
-
-    if (!canEdit) {
+    const recipe = recipes.find(r => r.id === currentRecipeId);
+    if (!recipe || !canEditRecipeNow(recipe)) {
       showToast('אין לך הרשאה לערוך מתכונים', 'error');
       return;
     }
@@ -2942,7 +4702,6 @@
 
     try {
       // Update in Firestore
-      const recipe = recipes.find(r => r.id === currentRecipeId);
       recipe.tags = [...editingRecipeTags];
 
       await db.collection('recipes').doc(currentRecipeId).update({
@@ -2968,10 +4727,9 @@
 
   // Recipe extraction function
   async function extractRecipeFromUrl() {
-    if (!currentRecipeId || !canEdit) return;
-
+    if (!currentRecipeId) return;
     const recipe = recipes.find(r => r.id === currentRecipeId);
-    if (!recipe || !recipe.content?.url) return;
+    if (!recipe || !canEditRecipeNow(recipe) || !recipe.content?.url) return;
 
     const url = recipe.content.url;
     const extractBtn = document.querySelector('.extract-recipe-btn');
@@ -3255,8 +5013,104 @@
   }
 
   function saveSettings() {
-    showToast('ההגדרות נשמרו', 'success');
+    showToast(appLanguage === 'en' ? 'Settings saved' : 'ההגדרות נשמרו', 'success');
     closeSettingsModal();
+  }
+
+  function initLanguage() {
+    try {
+      appLanguage = localStorage.getItem('language') === 'en' ? 'en' : 'he';
+    } catch (error) {
+      appLanguage = 'he';
+    }
+    applyLanguage(appLanguage, false);
+  }
+
+  function applyLanguage(language, rerender = true) {
+    appLanguage = language === 'en' ? 'en' : 'he';
+    const html = document.documentElement;
+    html.lang = appLanguage;
+    html.dir = appLanguage === 'en' ? 'ltr' : 'rtl';
+
+    try {
+      localStorage.setItem('language', appLanguage);
+    } catch (error) {
+      // localStorage may be unavailable in private browsing.
+    }
+
+    document.querySelectorAll('.language-btn').forEach(button => {
+      const active = button.dataset.language === appLanguage;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+
+    const copy = UI_COPY[appLanguage];
+    const eyebrow = document.querySelector('.header-eyebrow');
+    const title = document.querySelector('.header-brand h1');
+    if (eyebrow) eyebrow.textContent = copy.eyebrow;
+    if (title) title.textContent = copy.title;
+    if (settingsBtn) {
+      settingsBtn.title = copy.settings;
+      settingsBtn.setAttribute('aria-label', copy.settings);
+      settingsBtn.querySelector('.header-action-label').textContent = copy.settings;
+    }
+    if (searchInput) searchInput.placeholder = copy.search;
+    document.querySelector('[data-library-scope="all"]')?.replaceChildren(copy.all);
+    document.querySelector('[data-library-scope="mine"]')?.replaceChildren(copy.mine);
+    document.querySelector('[data-library-scope="shared"]')?.replaceChildren(copy.shared);
+    document.querySelector('.kitchen-picker > span')?.replaceChildren(copy.kitchen);
+    document.querySelector('.tags-filter-label')?.replaceChildren(copy.filterTags);
+    const addRecipeLabel = addRecipeBtn?.querySelector('span')?.nextSibling;
+    if (addRecipeLabel) addRecipeLabel.textContent = ` ${copy.addRecipe}`;
+    const settingTitle = document.getElementById('language-setting-title');
+    const settingNote = document.getElementById('language-setting-note');
+    if (settingTitle) settingTitle.textContent = appLanguage === 'en' ? 'Language' : 'שפה';
+    if (settingNote) {
+      settingNote.textContent = appLanguage === 'en'
+        ? 'In English, recipe text is translated precisely when you open it. Quantities, times, and temperatures stay exactly as written.'
+        : 'באנגלית, טקסט המתכון מתורגם במדויק כשפותחים אותו. כמויות, זמנים וטמפרטורות נשארים כפי שנכתבו.';
+    }
+    document.querySelector('#settings-modal .modal-title')?.replaceChildren(
+      appLanguage === 'en' ? 'Settings' : 'הגדרות'
+    );
+    const cookingFabLabel = cookingFab?.querySelector('span:not(.cooking-fab-count)');
+    if (cookingFabLabel) {
+      cookingFabLabel.textContent = appLanguage === 'en'
+        ? 'I’m cooking now'
+        : 'אני במטבח עכשיו';
+    }
+    document.querySelector('.cooking-workspace-heading > span')?.replaceChildren(
+      appLanguage === 'en' ? 'LIVE COOKING' : 'בישול חי'
+    );
+    document.getElementById('cooking-workspace-title')?.replaceChildren(
+      appLanguage === 'en' ? 'I’m cooking now' : 'אני במטבח עכשיו'
+    );
+    if (cookingClearBtn) {
+      cookingClearBtn.textContent = appLanguage === 'en' ? 'Clear kitchen' : 'ניקוי המטבח';
+    }
+    const cookingViewLabels = appLanguage === 'en'
+      ? { recipes: 'Recipes', ingredients: 'Ingredients', timeline: 'Timeline' }
+      : { recipes: 'מתכונים', ingredients: 'רשימת מרכיבים', timeline: 'ציר בישול' };
+    document.querySelectorAll('[data-cooking-view]').forEach(button => {
+      button.textContent = cookingViewLabels[button.dataset.cookingView];
+    });
+    updateAuthUI();
+
+    if (rerender && isInitialized) {
+      renderCategories();
+      populateCategorySelect();
+      renderTagFilters();
+      renderV2Chrome();
+      renderRecipes();
+      if (currentRecipeId && modal.classList.contains('active')) openRecipe(currentRecipeId);
+      if (isCookingWorkspaceOpen) renderCookingWorkspace();
+    }
+  }
+
+  function setupLanguageToggle() {
+    document.querySelectorAll('.language-btn').forEach(button => {
+      button.addEventListener('click', () => applyLanguage(button.dataset.language));
+    });
   }
 
   // Theme toggle functions
@@ -3349,8 +5203,8 @@
 
   async function saveEditedCategory() {
     if (!currentRecipeId) return;
-
-    if (!canEdit) {
+    const recipe = recipes.find(r => r.id === currentRecipeId);
+    if (!recipe || !canEditRecipeNow(recipe)) {
       showToast('אין לך הרשאה לערוך מתכונים', 'error');
       return;
     }
@@ -3375,7 +5229,6 @@
       const newMainCategory = selectedOption?.dataset.main;
 
       // Update in Firestore
-      const recipe = recipes.find(r => r.id === currentRecipeId);
       recipe.name = newName;
       recipe.category = newCategory;
       if (newMainCategory) {
@@ -3450,7 +5303,7 @@
   }
 
   async function addNewMainCategory() {
-    if (!canEdit) {
+    if (!isSystemEditor()) {
       showToast('אין לך הרשאה לערוך קטגוריות', 'error');
       return;
     }
@@ -3500,7 +5353,7 @@
   }
 
   async function addNewSubCategory(mainCatId) {
-    if (!canEdit) {
+    if (!isSystemEditor()) {
       showToast('אין לך הרשאה לערוך קטגוריות', 'error');
       return;
     }
@@ -3556,7 +5409,7 @@
   }
 
   async function deleteSubCategory(mainCatId, subCatId) {
-    if (!canEdit) {
+    if (!isSystemEditor()) {
       showToast('אין לך הרשאה לערוך קטגוריות', 'error');
       return;
     }
@@ -3596,7 +5449,7 @@
   }
 
   async function deleteMainCategory(mainCatId) {
-    if (!canEdit) {
+    if (!isSystemEditor()) {
       showToast('אין לך הרשאה לערוך קטגוריות', 'error');
       return;
     }

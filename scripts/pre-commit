@@ -5,7 +5,7 @@
 # Only run if relevant files are staged
 STAGED=$(git diff --cached --name-only)
 
-if echo "$STAGED" | grep -qE '^(app\.js|cooking-workspace-core\.js|styles\.css|import-config\.js)$'; then
+if echo "$STAGED" | grep -qE '^(app\.js|cooking-workspace-core\.js|cookbook-v2-core\.js|styles\.css|import-config\.js)$'; then
   # Compute short MD5 hashes of file contents
   JS_HASH=$(md5 -q app.js 2>/dev/null || md5sum app.js | cut -c1-32)
   JS_HASH=${JS_HASH:0:8}
@@ -19,14 +19,18 @@ if echo "$STAGED" | grep -qE '^(app\.js|cooking-workspace-core\.js|styles\.css|i
   COOKING_HASH=$(md5 -q cooking-workspace-core.js 2>/dev/null || md5sum cooking-workspace-core.js | cut -c1-32)
   COOKING_HASH=${COOKING_HASH:0:8}
 
+  V2_HASH=$(md5 -q cookbook-v2-core.js 2>/dev/null || md5sum cookbook-v2-core.js | cut -c1-32)
+  V2_HASH=${V2_HASH:0:8}
+
   # Update index.html with new hashes
   sed -i '' "s/app\.js?v=[a-zA-Z0-9]*/app.js?v=$JS_HASH/" index.html
   sed -i '' "s/styles\.css?v=[a-zA-Z0-9]*/styles.css?v=$CSS_HASH/" index.html
   sed -i '' "s/import-config\.js?v=[a-zA-Z0-9]*/import-config.js?v=$CONFIG_HASH/" index.html
   sed -i '' "s/cooking-workspace-core\.js?v=[a-zA-Z0-9]*/cooking-workspace-core.js?v=$COOKING_HASH/" index.html
+  sed -i '' "s/cookbook-v2-core\.js?v=[a-zA-Z0-9]*/cookbook-v2-core.js?v=$V2_HASH/" index.html
 
   # Stage the updated index.html
   git add index.html
 
-  echo "Cache-busting hashes updated: app.js=$JS_HASH, cooking-workspace-core.js=$COOKING_HASH, styles.css=$CSS_HASH, import-config.js=$CONFIG_HASH"
+  echo "Cache-busting hashes updated: app.js=$JS_HASH, cooking-workspace-core.js=$COOKING_HASH, cookbook-v2-core.js=$V2_HASH, styles.css=$CSS_HASH, import-config.js=$CONFIG_HASH"
 fi

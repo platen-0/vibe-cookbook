@@ -8,3 +8,4 @@
 !.env.*.example
 node_modules/
 .wrangler/
+firestore-debug.log
