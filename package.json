@@ -6,6 +6,7 @@
     "test": "node --test worker/test/*.test.js test/*.test.js",
     "test:rules": "firebase emulators:exec --only firestore \"node --test test/firestore.rules.js\"",
     "audit:migration": "node scripts/audit-v2-migration.mjs",
+    "migrate:ownership": "node scripts/migrate-production-ownership.mjs",
     "worker:dev": "npx wrangler@latest dev --config worker/wrangler.jsonc",
     "worker:deploy": "npx wrangler@latest deploy --config worker/wrangler.jsonc"
   },

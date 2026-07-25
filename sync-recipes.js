@@ -9,13 +9,15 @@ function parseFirestoreValue(value) {
   if (value.integerValue !== undefined) return parseInt(value.integerValue);
   if (value.doubleValue !== undefined) return value.doubleValue;
   if (value.booleanValue !== undefined) return value.booleanValue;
+  if (value.timestampValue !== undefined) return value.timestampValue;
   if (value.nullValue !== undefined) return null;
   if (value.arrayValue) {
     return (value.arrayValue.values || []).map(parseFirestoreValue);
   }
   if (value.mapValue) {
     const result = {};
-    for (const [k, v] of Object.entries(value.mapValue.fields || {})) {
+    for (const [k, v] of Object.entries(value.mapValue.fields || {})
+      .sort(([left], [right]) => left.localeCompare(right))) {
       result[k] = parseFirestoreValue(v);
     }
     return result;
@@ -25,7 +27,8 @@ function parseFirestoreValue(value) {
 
 function parseDocument(doc) {
   const recipe = { id: doc.name.split('/').pop() };
-  for (const [key, value] of Object.entries(doc.fields || {})) {
+  for (const [key, value] of Object.entries(doc.fields || {})
+    .sort(([left], [right]) => left.localeCompare(right))) {
     recipe[key] = parseFirestoreValue(value);
   }
   return recipe;
