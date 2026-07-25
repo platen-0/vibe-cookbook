@@ -132,14 +132,26 @@
     const scope = VALID_LIBRARY_SCOPES.has(options.scope) ? options.scope : 'all';
     const uid = options.uid || null;
     const favoriteIds = options.favoriteIds || new Set();
+    const legacyOwnerTag = options.legacyOwnerTag || null;
+    const isLegacyOwnedByViewer = Boolean(
+      !recipe.ownerUid &&
+      legacyOwnerTag &&
+      recipe.tags.includes(legacyOwnerTag)
+    );
 
     if (scope === 'favorites') return favoriteIds.has(recipe.id);
-    if (scope === 'mine') return Boolean(uid && recipe.ownerUid === uid);
+    if (scope === 'mine') {
+      return Boolean(uid && (recipe.ownerUid === uid || isLegacyOwnedByViewer));
+    }
     if (scope === 'shared') {
       return Boolean(
         uid &&
-        recipe.ownerUid !== uid &&
         (
+          (!recipe.ownerUid && legacyOwnerTag && !isLegacyOwnedByViewer) ||
+          (recipe.ownerUid && recipe.ownerUid !== uid)
+        ) &&
+        (
+          !recipe.ownerUid ||
           options.recipeAccessIds?.has(recipe.id) ||
           recipe.sharedKitchenIds.some(id => Boolean(getRole(options.kitchenRoles, id)))
         )

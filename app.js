@@ -2561,6 +2561,7 @@
           scope: selectedLibraryKitchenId ? 'kitchen' : currentLibraryScope,
           kitchenId: selectedLibraryKitchenId,
           uid: currentUser?.uid,
+          legacyOwnerTag: currentUser ? EMAIL_TO_TAG[currentUser.email] : null,
           favoriteIds,
           recipeAccessIds,
           kitchenRoles

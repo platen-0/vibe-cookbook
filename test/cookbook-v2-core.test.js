@@ -72,6 +72,23 @@ test('favorites behave as a private system filter', () => {
   );
 });
 
+test('legacy uploader tags bridge personal and shared views before UID migration', () => {
+  const talRecipe = { id: 'tal-legacy', tags: ['tal', 'quick'] };
+  const einavRecipe = { id: 'einav-legacy', tags: ['einav'] };
+  const viewer = {
+    uid: 'tal-uid',
+    legacyOwnerTag: 'tal',
+    favoriteIds: new Set(),
+    recipeAccessIds: new Set(),
+    kitchenRoles: {}
+  };
+
+  assert.equal(Core.recipeMatchesLibrary(talRecipe, { ...viewer, scope: 'mine' }), true);
+  assert.equal(Core.recipeMatchesLibrary(einavRecipe, { ...viewer, scope: 'mine' }), false);
+  assert.equal(Core.recipeMatchesLibrary(talRecipe, { ...viewer, scope: 'shared' }), false);
+  assert.equal(Core.recipeMatchesLibrary(einavRecipe, { ...viewer, scope: 'shared' }), true);
+});
+
 test('share policies resolve exact recipe, category, tag, and all scopes', () => {
   const recipes = [
     { id: 'a', ownerUid: 'tal', category: 'soups', tags: ['quick'] },
