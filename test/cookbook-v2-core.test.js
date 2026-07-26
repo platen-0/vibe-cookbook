@@ -21,6 +21,18 @@ test('profile onboarding requires both username and first name', () => {
   assert.deepEqual(Object.keys(invalid.errors).sort(), ['firstName', 'username']);
 });
 
+test('external URLs allow only HTTP(S) and social hosts require exact domain boundaries', () => {
+  assert.equal(Core.normalizeHttpUrl('javascript:alert(1)'), '');
+  assert.equal(Core.normalizeHttpUrl('data:text/html,<script>alert(1)</script>'), '');
+  assert.equal(
+    Core.normalizeHttpUrl('https://example.com/recipe'),
+    'https://example.com/recipe'
+  );
+  assert.equal(Core.hostnameMatches('www.instagram.com', 'instagram.com'), true);
+  assert.equal(Core.hostnameMatches('instagram.com.evil.example', 'instagram.com'), false);
+  assert.equal(Core.hostnameMatches('evilinstagram.com', 'instagram.com'), false);
+});
+
 test('user-bound canonical recipes remain visible through shared kitchens', () => {
   const recipe = {
     id: 'r1',

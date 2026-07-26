@@ -13,6 +13,7 @@ import {
   extractRecipeDraft,
   extractSocialContext,
   findRecipeInJsonLd,
+  signPrivateImages,
   storeRecipeImage
 } from '../src/index.js';
 import importerWorker from '../src/index.js';
@@ -323,6 +324,7 @@ test('classifies a food photo without creating a recipe draft', async () => {
 });
 
 test('stores private recipe images in KV instead of the public repository', async () => {
+  const originalFetch = globalThis.fetch;
   const stored = new Map();
   const env = {
     IMAGE_SIGNING_SECRET: 'test-secret-that-is-long-enough-for-hmac',
@@ -332,20 +334,108 @@ test('stores private recipe images in KV instead of the public repository', asyn
       }
     }
   };
-  const result = await storeRecipeImage(
-    {
-      recipeId: 'recipe_12345678',
-      private: true,
-      dataUrl: `data:image/png;base64,${Buffer.from('private-image').toString('base64')}`
-    },
-    { sub: 'user_123' },
-    env,
-    'https://worker.example'
-  );
-  assert.equal(result.protected, true);
-  assert.equal(result.privateKey, 'recipes/user_123/recipe_12345678.png');
-  assert.match(result.url, /^https:\/\/worker\.example\/private-images\//);
-  assert.equal(stored.has(result.privateKey), true);
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    fields: {
+      ownerUid: { stringValue: 'user_123' },
+      editorUids: { arrayValue: { values: [] } }
+    }
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  try {
+    const result = await storeRecipeImage(
+      {
+        recipeId: 'recipe_12345678',
+        private: true,
+        dataUrl: `data:image/png;base64,${Buffer.from('private-image').toString('base64')}`
+      },
+      { sub: 'user_123', token: 'firebase-token' },
+      env,
+      'https://worker.example'
+    );
+    assert.equal(result.protected, true);
+    assert.equal(result.privateKey, 'recipes/user_123/recipe_12345678.png');
+    assert.match(result.url, /^https:\/\/worker\.example\/private-images\//);
+    assert.equal(stored.has(result.privateKey), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('rejects image writes for recipes the caller cannot edit', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    fields: {
+      ownerUid: { stringValue: 'victim' },
+      editorUids: {
+        arrayValue: { values: [{ stringValue: 'delegated-editor' }] }
+      }
+    }
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  try {
+    await assert.rejects(
+      storeRecipeImage(
+        {
+          recipeId: 'recipe_12345678',
+          private: true,
+          dataUrl: `data:image/png;base64,${Buffer.from('image').toString('base64')}`
+        },
+        { sub: 'attacker', token: 'firebase-token' },
+        {},
+        'https://worker.example'
+      ),
+      /edit access was denied/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('private image signing binds each storage key to its authorized recipe', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ name: 'authorized-recipe' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  const env = {
+    IMAGE_SIGNING_SECRET: 'test-secret-that-is-long-enough-for-hmac',
+    RECIPE_IMAGES: {
+      async head() {
+        return { metadata: { recipeId: 'different_recipe' } };
+      }
+    }
+  };
+  try {
+    await assert.rejects(
+      signPrivateImages(
+        {
+          images: [{
+            recipeId: 'recipe_12345678',
+            key: 'recipes/victim/other_recipe_123.jpg'
+          }]
+        },
+        { sub: 'attacker', token: 'firebase-token' },
+        env,
+        'https://worker.example'
+      ),
+      /Invalid private image reference/
+    );
+    await assert.rejects(
+      signPrivateImages(
+        {
+          images: [{
+            recipeId: 'recipe_12345678',
+            key: 'recipes/victim/recipe_12345678.jpg'
+          }]
+        },
+        { sub: 'attacker', token: 'firebase-token' },
+        env,
+        'https://worker.example'
+      ),
+      /access was denied/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('builds a strict live-cooking schema and normalizes stable checklist ids', async () => {

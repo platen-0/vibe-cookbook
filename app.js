@@ -843,8 +843,6 @@
     const personalId = CookbookV2Core.personalKitchenId(currentUser.uid);
     const kitchenRef = db.collection('kitchens').doc(personalId);
     const emailNormalized = String(currentUser.email || '').trim().toLowerCase();
-    const emailHash = await sha256Text(emailNormalized);
-    const emailDirectoryRef = db.collection('emailDirectory').doc(emailHash);
     const previousUsername = userProfile?.usernameNormalized || '';
 
     try {
@@ -870,10 +868,6 @@
           uid: currentUser.uid,
           username: profile.username,
           firstName: profile.firstName,
-          updatedAt: now
-        });
-        transaction.set(emailDirectoryRef, {
-          uid: currentUser.uid,
           updatedAt: now
         });
         transaction.set(userRef, {
@@ -1440,6 +1434,7 @@
       batch.update(kitchenRef, {
         memberIds: firebase.firestore.FieldValue.arrayUnion(accessRequest.requesterUid),
         [`memberRoles.${accessRequest.requesterUid}`]: 'member',
+        lastApprovedAccessRequestId: requestId,
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       });
       batch.update(requestRef, {
@@ -1516,11 +1511,11 @@
     if (!target) throw new Error('missing-target');
     if (target.includes('@') && !target.startsWith('@')) {
       const targetEmail = target.toLowerCase();
-      const emailHash = await sha256Text(targetEmail);
-      const directory = await db.collection('emailDirectory').doc(emailHash).get();
       return {
         kind: 'email',
-        targetUid: directory.exists ? directory.data().uid : null,
+        // Email identity is proved only by Firebase Auth's verified email claim.
+        // A client-writable hash directory cannot safely establish ownership.
+        targetUid: null,
         targetEmail,
         targetUsername: null
       };
@@ -1762,6 +1757,7 @@
 
       await policyRef.set({
         ...policy,
+        recipeIds,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       });
@@ -1868,7 +1864,9 @@
           .get();
         if (!policySnapshot.exists) throw new Error('missing-policy');
         const policy = { id: policySnapshot.id, ...policySnapshot.data() };
-        const recipeIds = CookbookV2Core.resolvePolicyRecipeIds(policy, recipes);
+        const recipeIds = Array.isArray(policy.recipeIds)
+          ? policy.recipeIds
+          : CookbookV2Core.resolvePolicyRecipeIds(policy, recipes);
         await writeAccessGrants(
           recipeIds,
           [currentUser.uid],
@@ -2086,12 +2084,12 @@
   function getRecipePrimaryImage(recipe) {
     const privateKey = recipe.content?.privateImageKeys?.find(Boolean);
     const privateUrl = privateKey ? privateImageUrls.get(privateKey) : '';
-    if (privateUrl) return privateUrl;
+    if (privateUrl) return CookbookV2Core.normalizeHttpUrl(privateUrl);
     const uploadedImage = recipe.content?.uploadedImages?.find(Boolean);
-    if (uploadedImage) return uploadedImage;
+    if (uploadedImage) return CookbookV2Core.normalizeHttpUrl(uploadedImage);
 
     const localImage = recipe.content?.images?.find(image => image && !image.endsWith('.docx'));
-    return localImage ? `images/${localImage}` : '';
+    return safeLocalImagePath(localImage);
   }
 
   function getCookingRecipeMedia(recipe) {
@@ -2107,7 +2105,7 @@
       const mainCategory = MAIN_CATEGORIES.find(category => category.id === getRecipeMainCategory(recipe));
       return `
         <div class="cooking-media-placeholder" aria-hidden="true">
-          <span>${mainCategory?.icon || '🍽️'}</span>
+          <span>${escapeHtml(mainCategory?.icon || '🍽️')}</span>
         </div>
       `;
     }
@@ -2396,7 +2394,7 @@
       const mainCategory = MAIN_CATEGORIES.find(category => category.id === getRecipeMainCategory(recipe));
       const thumbHtml = imageUrl
         ? `<img src="${escapeHtml(imageUrl)}" alt="">`
-        : `<span class="cooking-rail-placeholder" aria-hidden="true">${mainCategory?.icon || '🍽️'}</span>`;
+        : `<span class="cooking-rail-placeholder" aria-hidden="true">${escapeHtml(mainCategory?.icon || '🍽️')}</span>`;
 
       return `
         <button
@@ -2415,9 +2413,10 @@
 
     const recipeText = activeRecipe.content?.text || activeRecipe.content?.transcription;
     const category = categories.find(item => item.id === getRecipeSubCategory(activeRecipe));
-    const sourceLink = activeRecipe.content?.url
+    const safeSourceUrl = CookbookV2Core.normalizeHttpUrl(activeRecipe.content?.url);
+    const sourceLink = safeSourceUrl
       ? `
-        <a class="cooking-source-link" href="${escapeHtml(activeRecipe.content.url)}" target="_blank" rel="noopener">
+        <a class="cooking-source-link" href="${escapeHtml(safeSourceUrl)}" target="_blank" rel="noopener noreferrer">
           <span>למקור המתכון</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
         </a>
@@ -2433,7 +2432,7 @@
           <div>
             <span class="cooking-recipe-position">${activeIndex + 1} מתוך ${cookingRecipes.length}</span>
             <h3>${escapeHtml(activeRecipe.name || 'מתכון')}</h3>
-            ${category ? `<p>${category.icon || ''} ${escapeHtml(category.name || '')}</p>` : ''}
+            ${category ? `<p>${escapeHtml(category.icon || '')} ${escapeHtml(category.name || '')}</p>` : ''}
           </div>
           <button
             class="cooking-remove-btn"
@@ -2922,9 +2921,11 @@
           <strong>מצב לא מקוון</strong>
           <span>מציג נתונים ישנים. שינויים לא יישמרו ולא ישותפו.</span>
         </div>
-        <button class="offline-banner-retry" onclick="location.reload()">נסה שוב</button>
+        <button class="offline-banner-retry" type="button">נסה שוב</button>
       </div>
     `;
+    banner.querySelector('.offline-banner-retry')
+      ?.addEventListener('click', () => window.location.reload());
 
     // Insert after header
     const header = document.querySelector('.app-header');
@@ -2950,9 +2951,11 @@
           <strong>נתונים מהמטמון</strong>
           <span>לא הצלחנו להתחבר לשרת. ייתכן שהנתונים לא מעודכנים.</span>
         </div>
-        <button class="offline-banner-retry" onclick="location.reload()">נסה שוב</button>
+        <button class="offline-banner-retry" type="button">נסה שוב</button>
       </div>
     `;
+    banner.querySelector('.offline-banner-retry')
+      ?.addEventListener('click', () => window.location.reload());
 
     // Insert after header
     const header = document.querySelector('.app-header');
@@ -2989,8 +2992,8 @@
       btn.className = `category-btn main-cat ${currentMainCategory === cat.id ? 'active' : ''}`;
       btn.dataset.mainCategory = cat.id;
       btn.innerHTML = `
-        <span class="category-icon">${cat.icon}</span>
-        <span class="category-name">${localizedCategoryName(cat)}</span>
+        <span class="category-icon">${escapeHtml(cat.icon)}</span>
+        <span class="category-name">${escapeHtml(localizedCategoryName(cat))}</span>
       `;
       categoriesNav.appendChild(btn);
     });
@@ -3026,7 +3029,7 @@
       const btn = document.createElement('button');
       btn.className = `sub-category-btn ${currentSubCategory === cat.id ? 'active' : ''}`;
       btn.dataset.subCategory = cat.id;
-      btn.innerHTML = `${cat.icon} ${localizedCategoryName(cat)}`;
+      btn.textContent = `${cat.icon} ${localizedCategoryName(cat)}`;
       subCatNav.appendChild(btn);
     });
   }
@@ -3149,9 +3152,9 @@
     MAIN_CATEGORIES.forEach(mainCat => {
       const subCats = SUB_CATEGORIES[mainCat.id] || [];
       if (subCats.length > 0) {
-        html += `<optgroup label="${mainCat.icon} ${mainCat.name}">`;
+        html += `<optgroup label="${escapeHtml(mainCat.icon)} ${escapeHtml(mainCat.name)}">`;
         subCats.forEach(subCat => {
-          html += `<option value="${subCat.id}" data-main="${mainCat.id}">${subCat.icon} ${subCat.name}</option>`;
+          html += `<option value="${escapeHtml(subCat.id)}" data-main="${escapeHtml(mainCat.id)}">${escapeHtml(subCat.icon)} ${escapeHtml(subCat.name)}</option>`;
         });
         html += `</optgroup>`;
       }
@@ -3282,13 +3285,18 @@
                      CATEGORIES.find(c => c.id === recipe.category);
 
       const type = typeInfo[recipe.type] || typeInfo.link;
-      const hasLocalImage = recipe.content?.images && recipe.content.images.length > 0;
-      const hasUploadedImage = recipe.content?.uploadedImages && recipe.content.uploadedImages.length > 0;
       const privateImageKey = recipe.content?.privateImageKeys?.find(Boolean);
-      const privateImageUrl = privateImageKey ? privateImageUrls.get(privateImageKey) : '';
-      const localImageFile = hasLocalImage ? recipe.content.images[0] : null;
-      const uploadedImageUrl = hasUploadedImage ? recipe.content.uploadedImages[0] : null;
-      const isDocx = localImageFile && localImageFile.endsWith('.docx');
+      const privateImageUrl = CookbookV2Core.normalizeHttpUrl(
+        privateImageKey ? privateImageUrls.get(privateImageKey) : ''
+      );
+      const uploadedImageUrl = CookbookV2Core.normalizeHttpUrl(
+        recipe.content?.uploadedImages?.[0]
+      );
+      const localImageFile = recipe.content?.images?.[0] || '';
+      const localImagePath = localImageFile.endsWith('.docx')
+        ? ''
+        : safeLocalImagePath(localImageFile);
+      const safeRecipeType = Object.hasOwn(typeInfo, recipe.type) ? recipe.type : 'link';
 
       // Get tags
       const recipeTags = recipe.tags || autoTagRecipe(recipe);
@@ -3338,11 +3346,11 @@
       if (privateImageUrl) {
         imageHtml = `<img src="${escapeHtml(privateImageUrl)}" alt="${escapeHtml(recipe.name || '')}" class="recipe-image" loading="lazy">`;
       } else if (uploadedImageUrl) {
-        imageHtml = `<img src="${uploadedImageUrl}" alt="${recipe.name}" class="recipe-image" loading="lazy" onerror="this.classList.add('placeholder'); this.outerHTML='<div class=\\'recipe-image placeholder\\'>${mainCat?.icon || '🍽️'}</div>';">`;
-      } else if (hasLocalImage && !isDocx) {
-        imageHtml = `<img src="images/${localImageFile}" alt="${recipe.name}" class="recipe-image" loading="lazy" onerror="this.classList.add('placeholder'); this.outerHTML='<div class=\\'recipe-image placeholder\\'>${mainCat?.icon || '🍽️'}</div>';">`;
+        imageHtml = `<img src="${escapeHtml(uploadedImageUrl)}" alt="${escapeHtml(recipe.name || '')}" class="recipe-image" loading="lazy">`;
+      } else if (localImagePath) {
+        imageHtml = `<img src="${escapeHtml(localImagePath)}" alt="${escapeHtml(recipe.name || '')}" class="recipe-image" loading="lazy">`;
       } else {
-        imageHtml = `<div class="recipe-image placeholder">${mainCat?.icon || subCat?.icon || '🍽️'}</div>`;
+        imageHtml = `<div class="recipe-image placeholder">${escapeHtml(mainCat?.icon || subCat?.icon || '🍽️')}</div>`;
       }
 
       return `
@@ -3368,8 +3376,8 @@
             <h2 class="recipe-name">${escapeHtml(recipe.name || '')}</h2>
             ${originHtml}
             <div class="recipe-meta">
-              <span class="recipe-tag type-${recipe.type}">${ui(recipe.type) || type.label}</span>
-              <span class="recipe-tag category-hierarchy">${categoryDisplay}</span>
+              <span class="recipe-tag type-${safeRecipeType}">${escapeHtml(ui(safeRecipeType) || type.label)}</span>
+              <span class="recipe-tag category-hierarchy">${escapeHtml(categoryDisplay)}</span>
             </div>
             ${tagHtml ? `<div class="recipe-tags">${tagHtml}</div>` : ''}
             ${provenanceHtml}
@@ -3407,6 +3415,7 @@
       const privateImageKeys = recipe.content?.privateImageKeys || [];
       const privateImages = privateImageKeys
         .map(key => privateImageUrls.get(key))
+        .map(CookbookV2Core.normalizeHttpUrl)
         .filter(Boolean);
       if (privateImages.length === 1) {
         contentHtml += `<img src="${escapeHtml(privateImages[0])}" alt="${escapeHtml(recipe.name || '')}" class="modal-image">`;
@@ -3419,7 +3428,9 @@
       }
 
       if (recipe.content?.uploadedImages && recipe.content.uploadedImages.length > 0) {
-        const images = recipe.content.uploadedImages;
+        const images = recipe.content.uploadedImages
+          .map(CookbookV2Core.normalizeHttpUrl)
+          .filter(Boolean);
         if (images.length === 1) {
           contentHtml += `<img src="${escapeHtml(images[0])}" alt="${escapeHtml(recipe.name || '')}" class="modal-image">`;
         } else {
@@ -3432,13 +3443,16 @@
       }
 
       if (recipe.content?.images && recipe.content.images.length > 0) {
-        const images = recipe.content.images.filter(img => !img.endsWith('.docx'));
+        const images = recipe.content.images
+          .filter(img => !img.endsWith('.docx'))
+          .map(safeLocalImagePath)
+          .filter(Boolean);
         if (images.length === 1) {
-          contentHtml += `<img src="images/${escapeHtml(images[0])}" alt="${escapeHtml(recipe.name || '')}" class="modal-image">`;
+          contentHtml += `<img src="${escapeHtml(images[0])}" alt="${escapeHtml(recipe.name || '')}" class="modal-image">`;
         } else if (images.length > 1) {
           contentHtml += `
             <div class="images-gallery">
-              ${images.map(img => `<img src="images/${escapeHtml(img)}" alt="${escapeHtml(recipe.name || '')}">`).join('')}
+              ${images.map(img => `<img src="${escapeHtml(img)}" alt="${escapeHtml(recipe.name || '')}">`).join('')}
             </div>
           `;
         }
@@ -3646,14 +3660,30 @@
 
     // Link button - only show if not already shown in video embed / external card
     // For video types like instagram/youtube or external recipe sites, the button is already in the embed
-    const url = recipe.content?.url;
-    const isVideoEmbed = url && (url.includes('instagram.com') || url.includes('youtube.com') || url.includes('youtu.be'));
-    const isExternalSite = url && !isVideoEmbed && !url.includes('facebook.com') && !url.includes('tiktok.com') && (recipe.type === 'video' || recipe.type === 'link');
+    const url = CookbookV2Core.normalizeHttpUrl(recipe.content?.url);
+    const domain = getDomainFromUrl(url);
+    const isVideoEmbed = Boolean(
+      domain &&
+      (
+        CookbookV2Core.hostnameMatches(domain, 'instagram.com') ||
+        CookbookV2Core.hostnameMatches(domain, 'youtube.com') ||
+        CookbookV2Core.hostnameMatches(domain, 'youtu.be')
+      )
+    );
+    const isExternalSite = Boolean(
+      url &&
+      !isVideoEmbed &&
+      domain &&
+      !CookbookV2Core.hostnameMatches(domain, 'facebook.com') &&
+      !CookbookV2Core.hostnameMatches(domain, 'fb.watch') &&
+      !CookbookV2Core.hostnameMatches(domain, 'tiktok.com') &&
+      (recipe.type === 'video' || recipe.type === 'link')
+    );
 
     // Only show link button for video fallbacks (facebook, tiktok) or if no embed was shown
-    if (recipe.content?.url && !isVideoEmbed && !isExternalSite) {
+    if (url && !isVideoEmbed && !isExternalSite) {
       contentHtml += `
-        <a href="${recipe.content.url}" target="_blank" rel="noopener" class="open-link-btn">
+        <a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="open-link-btn">
           🔗 פתח קישור מקורי
         </a>
       `;
@@ -3661,8 +3691,8 @@
 
     modalBody.innerHTML = `
       <div class="modal-header">
-        <h2 class="modal-title">${recipe.name}</h2>
-        <p class="modal-date">${category?.icon || ''} ${category?.name || ''} • ${date}</p>
+        <h2 class="modal-title">${escapeHtml(recipe.name || '')}</h2>
+        <p class="modal-date">${escapeHtml(category?.icon || '')} ${escapeHtml(category?.name || '')} • ${escapeHtml(date)}</p>
       </div>
       ${contentHtml}
     `;
@@ -3959,7 +3989,9 @@
   // Get domain from URL
   function getDomainFromUrl(url) {
     try {
-      const hostname = new URL(url).hostname;
+      const safeUrl = CookbookV2Core.normalizeHttpUrl(url);
+      if (!safeUrl) return null;
+      const hostname = new URL(safeUrl).hostname;
       return hostname.replace(/^www\./, '');
     } catch {
       return null;
@@ -3976,9 +4008,9 @@
       return { ...KNOWN_RECIPE_SITES[domain], domain };
     }
 
-    // Check for partial match (subdomains)
+    // Check only exact hosts and real subdomains, never lookalike domains.
     for (const [siteDomain, info] of Object.entries(KNOWN_RECIPE_SITES)) {
-      if (domain.includes(siteDomain)) {
+      if (CookbookV2Core.hostnameMatches(domain, siteDomain)) {
         return { ...info, domain };
       }
     }
@@ -3988,14 +4020,30 @@
 
   // Get video embed HTML
   function getVideoEmbed(content) {
-    const url = content.url;
+    const url = CookbookV2Core.normalizeHttpUrl(content?.url);
+    if (!url) return '';
+    const parsedUrl = new URL(url);
+    const hostname = parsedUrl.hostname.toLowerCase();
+    const escapedUrl = escapeHtml(url);
 
     // YouTube
-    const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\s]+)/);
-    if (ytMatch) {
+    if (
+      CookbookV2Core.hostnameMatches(hostname, 'youtube.com') ||
+      CookbookV2Core.hostnameMatches(hostname, 'youtu.be')
+    ) {
+      const pathParts = parsedUrl.pathname.split('/').filter(Boolean);
+      const videoId = CookbookV2Core.hostnameMatches(hostname, 'youtu.be')
+        ? pathParts[0]
+        : (
+            parsedUrl.searchParams.get('v') ||
+            (['shorts', 'embed'].includes(pathParts[0]) ? pathParts[1] : '')
+          );
+      if (!/^[A-Za-z0-9_-]{6,32}$/.test(videoId || '')) return '';
       return `
         <div class="video-container horizontal">
-          <iframe src="https://www.youtube.com/embed/${ytMatch[1]}"
+          <iframe src="https://www.youtube.com/embed/${escapeHtml(videoId)}"
+                  title="YouTube recipe video"
+                  referrerpolicy="strict-origin-when-cross-origin"
                   allowfullscreen
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture">
           </iframe>
@@ -4004,29 +4052,36 @@
     }
 
     // Instagram - show embed with fallback
-    if (url.includes('instagram.com')) {
-      const cleanUrl = url.split('?')[0];
+    if (CookbookV2Core.hostnameMatches(hostname, 'instagram.com')) {
+      parsedUrl.search = '';
+      parsedUrl.hash = '';
+      const embedUrl = `${parsedUrl.toString().replace(/\/$/, '')}/embed/`;
       return `
         <div class="video-container">
-          <iframe src="${cleanUrl}embed/"
+          <iframe src="${escapeHtml(embedUrl)}"
+                  title="Instagram recipe post"
+                  referrerpolicy="strict-origin-when-cross-origin"
                   allowfullscreen
                   scrolling="no"
                   allowtransparency="true">
           </iframe>
         </div>
-        <a href="${url}" target="_blank" rel="noopener" class="open-link-btn">
+        <a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" class="open-link-btn">
           📱 פתח באינסטגרם
         </a>
       `;
     }
 
     // Facebook - fallback only (no embed)
-    if (url.includes('facebook.com')) {
+    if (
+      CookbookV2Core.hostnameMatches(hostname, 'facebook.com') ||
+      CookbookV2Core.hostnameMatches(hostname, 'fb.watch')
+    ) {
       return `
         <div class="video-fallback">
           <div class="video-fallback-icon">📺</div>
           <p>סרטון מפייסבוק</p>
-          <a href="${url}" target="_blank" rel="noopener" class="open-link-btn">
+          <a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" class="open-link-btn">
             📱 פתח בפייסבוק
           </a>
         </div>
@@ -4034,12 +4089,12 @@
     }
 
     // TikTok - fallback
-    if (url.includes('tiktok.com')) {
+    if (CookbookV2Core.hostnameMatches(hostname, 'tiktok.com')) {
       return `
         <div class="video-fallback">
           <div class="video-fallback-icon">🎵</div>
           <p>סרטון מטיקטוק</p>
-          <a href="${url}" target="_blank" rel="noopener" class="open-link-btn">
+          <a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" class="open-link-btn">
             📱 פתח בטיקטוק
           </a>
         </div>
@@ -4048,14 +4103,14 @@
 
     // Check for known recipe websites
     const siteInfo = getRecipeSiteInfo(url);
-    if (siteInfo && !siteInfo.domain.includes('instagram') && !siteInfo.domain.includes('youtube') && !siteInfo.domain.includes('facebook') && !siteInfo.domain.includes('tiktok')) {
+    if (siteInfo) {
       return `
-        <div class="external-recipe-card" style="--site-color: ${siteInfo.color}">
+        <div class="external-recipe-card" style="--site-color: ${escapeHtml(siteInfo.color)}">
           <div class="external-recipe-header">
-            <span class="external-recipe-icon">${siteInfo.icon}</span>
+            <span class="external-recipe-icon">${escapeHtml(siteInfo.icon)}</span>
             <div class="external-recipe-source">
-              <span class="external-recipe-site-name">${siteInfo.name}</span>
-              <span class="external-recipe-domain">${siteInfo.domain}</span>
+              <span class="external-recipe-site-name">${escapeHtml(siteInfo.name)}</span>
+              <span class="external-recipe-domain">${escapeHtml(siteInfo.domain)}</span>
             </div>
           </div>
           <div class="external-recipe-body">
@@ -4065,8 +4120,8 @@
               <span class="hint-secondary">תוכלי להעתיק את המתכון ולהדביק אותו בשדה "העלאת טקסט ידנית" כדי שהוא יהיה זמין לחיפוש.</span>
             </p>
           </div>
-          <a href="${url}" target="_blank" rel="noopener" class="external-recipe-btn">
-            🔗 פתח מתכון באתר ${siteInfo.name}
+          <a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" class="external-recipe-btn">
+            🔗 פתח מתכון באתר ${escapeHtml(siteInfo.name)}
           </a>
         </div>
       `;
@@ -4077,7 +4132,7 @@
       <div class="video-fallback">
         <div class="video-fallback-icon">🎬</div>
         <p>סרטון</p>
-        <a href="${url}" target="_blank" rel="noopener" class="open-link-btn">
+        <a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" class="open-link-btn">
           📱 פתח לצפייה
         </a>
       </div>
@@ -4232,21 +4287,9 @@
         }
       }
 
-      // Reserve the Firestore ID before uploading so the image path is stable.
+      // Reserve the Firestore ID so image authorization can be checked against
+      // the canonical recipe document before the Worker accepts a write.
       const docRef = db.collection('recipes').doc();
-      if (formData.image) {
-        const storedImage = await uploadRecipeImage(
-          docRef.id,
-          formData.image,
-          COOKBOOK_V2_ENABLED
-        );
-        if (storedImage.protected && storedImage.privateKey) {
-          formData.content.privateImageKeys = [storedImage.privateKey];
-          privateImageUrls.set(storedImage.privateKey, storedImage.url);
-        } else {
-          formData.content.uploadedImages = [storedImage.url];
-        }
-      }
       if (formData.content?.text) {
         formData.content.textMeta = {
           source: importDraft ? 'human-approved' : 'human',
@@ -4285,6 +4328,32 @@
 
       await docRef.set(newRecipe);
       newRecipe.id = docRef.id;
+
+      if (formData.image) {
+        try {
+          const storedImage = await uploadRecipeImage(
+            docRef.id,
+            formData.image,
+            COOKBOOK_V2_ENABLED
+          );
+          if (storedImage.protected && storedImage.privateKey) {
+            newRecipe.content.privateImageKeys = [storedImage.privateKey];
+            privateImageUrls.set(storedImage.privateKey, storedImage.url);
+            await docRef.update({
+              'content.privateImageKeys': [storedImage.privateKey]
+            });
+          } else {
+            newRecipe.content.uploadedImages = [storedImage.url];
+            await docRef.update({
+              'content.uploadedImages': [storedImage.url]
+            });
+          }
+        } catch (imageError) {
+          console.error('Recipe image upload failed after recipe creation:', imageError);
+          showToast('המתכון נשמר, אבל התמונה לא נשמרה', 'info');
+        }
+      }
+
       if (COOKBOOK_V2_ENABLED) await applyFutureSharePoliciesToRecipe(newRecipe);
 
       // Update local state
@@ -4971,8 +5040,21 @@
   // Escape HTML
   function escapeHtml(text) {
     const div = document.createElement('div');
-    div.textContent = text;
+    div.textContent = String(text ?? '');
     return div.innerHTML;
+  }
+
+  function safeLocalImagePath(value) {
+    const path = String(value || '').trim();
+    if (
+      !path ||
+      path.startsWith('/') ||
+      path.split('/').includes('..') ||
+      /[<>"'`\\\u0000-\u001f]/.test(path)
+    ) {
+      return '';
+    }
+    return `images/${path}`;
   }
 
   // Legacy Firebase Storage URLs still display; new images are served by GitHub Pages.
@@ -5252,7 +5334,8 @@
     // Image gallery click to fullscreen
     modalBody.addEventListener('click', (e) => {
       if (e.target.tagName === 'IMG' && e.target.closest('.images-gallery')) {
-        window.open(e.target.src, '_blank');
+        const imageWindow = window.open(e.target.src, '_blank', 'noopener,noreferrer');
+        if (imageWindow) imageWindow.opener = null;
       }
     });
 
@@ -6333,10 +6416,10 @@
     MAIN_CATEGORIES.forEach(mainCat => {
       const subCats = SUB_CATEGORIES[mainCat.id] || [];
       if (subCats.length > 0) {
-        html += `<optgroup label="${mainCat.icon} ${mainCat.name}">`;
+        html += `<optgroup label="${escapeHtml(mainCat.icon)} ${escapeHtml(mainCat.name)}">`;
         subCats.forEach(subCat => {
           const selected = recipe.category === subCat.id ? 'selected' : '';
-          html += `<option value="${subCat.id}" data-main="${mainCat.id}" ${selected}>${subCat.icon} ${subCat.name}</option>`;
+          html += `<option value="${escapeHtml(subCat.id)}" data-main="${escapeHtml(mainCat.id)}" ${selected}>${escapeHtml(subCat.icon)} ${escapeHtml(subCat.name)}</option>`;
         });
         html += `</optgroup>`;
       }
@@ -6425,24 +6508,24 @@
     MAIN_CATEGORIES.forEach(mainCat => {
       const subCats = SUB_CATEGORIES[mainCat.id] || [];
       html += `
-        <div class="category-manager-section" data-main-category="${mainCat.id}">
+        <div class="category-manager-section" data-main-category="${escapeHtml(mainCat.id)}">
           <div class="category-manager-header">
-            <span class="category-manager-icon">${mainCat.icon}</span>
-            <span class="category-manager-name">${mainCat.name}</span>
-            <button class="delete-main-category-btn" data-main-category="${mainCat.id}" title="מחק קטגוריה">🗑️</button>
+            <span class="category-manager-icon">${escapeHtml(mainCat.icon)}</span>
+            <span class="category-manager-name">${escapeHtml(mainCat.name)}</span>
+            <button class="delete-main-category-btn" data-main-category="${escapeHtml(mainCat.id)}" title="מחק קטגוריה">🗑️</button>
           </div>
           <div class="sub-categories-list">
             ${subCats.map(sub => `
-              <div class="sub-category-item" data-sub-id="${sub.id}" data-main-id="${mainCat.id}">
-                <span>${sub.icon} ${sub.name}</span>
-                <button class="delete-sub-category-btn" data-sub-id="${sub.id}" data-main-id="${mainCat.id}" title="מחק">×</button>
+              <div class="sub-category-item" data-sub-id="${escapeHtml(sub.id)}" data-main-id="${escapeHtml(mainCat.id)}">
+                <span>${escapeHtml(sub.icon)} ${escapeHtml(sub.name)}</span>
+                <button class="delete-sub-category-btn" data-sub-id="${escapeHtml(sub.id)}" data-main-id="${escapeHtml(mainCat.id)}" title="מחק">×</button>
               </div>
             `).join('')}
           </div>
           <div class="add-sub-category-row">
-            <input type="text" class="sub-category-name-input" placeholder="שם תת-קטגוריה" data-main="${mainCat.id}">
-            <input type="text" class="sub-category-icon-input" placeholder="🍽️" maxlength="2" data-main="${mainCat.id}" style="width: 50px;">
-            <button class="btn btn-small add-sub-category-btn" data-main-category="${mainCat.id}">+</button>
+            <input type="text" class="sub-category-name-input" placeholder="שם תת-קטגוריה" data-main="${escapeHtml(mainCat.id)}">
+            <input type="text" class="sub-category-icon-input" placeholder="🍽️" maxlength="2" data-main="${escapeHtml(mainCat.id)}" style="width: 50px;">
+            <button class="btn btn-small add-sub-category-btn" data-main-category="${escapeHtml(mainCat.id)}">+</button>
           </div>
         </div>
       `;

@@ -2,6 +2,8 @@
 <html lang="he" dir="rtl">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://vibe-cookbook-importer.platen-0-bight.workers.dev; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com https://www.youtube.com https://www.instagram.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Levashel | ספר המתכונים שלך</title>
   <link rel="canonical" href="https://levashel.com/">
@@ -41,9 +43,15 @@
   <meta http-equiv="Expires" content="0">
 
   <!-- Firebase SDK -->
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-app-compat.js"
+          integrity="sha384-Ufq88lVebSanA6Y271YEbcklp6Nb9pT26KQ/eBdyjEjvge1iB15DbPg9GhDXSPKV"
+          crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-auth-compat.js"
+          integrity="sha384-WCMvq+IYULWMFMeYO/fKLTgpCgLaOUxgQc1dFPdo6uk9tv7Cq3ZKwFEvTteutP1M"
+          crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore-compat.js"
+          integrity="sha384-9Ciszmem3lPYqTrIW4mg4FOU+ptKy/ZrJGnd/qHwS0nrWE5y8GHV9BNBl8uTDVX9"
+          crossorigin="anonymous"></script>
   <!-- Firebase Storage removed - requires paid plan -->
 
   <link rel="stylesheet" href="styles.css?v=69af660f">
@@ -922,7 +930,7 @@
 
   <script src="import-config.js?v=dc2de91e"></script>
   <script src="cooking-workspace-core.js?v=0ae85342"></script>
-  <script src="cookbook-v2-core.js?v=e4840a89"></script>
-  <script src="app.js?v=5a495049"></script>
+  <script src="cookbook-v2-core.js?v=abad65a9"></script>
+  <script src="app.js?v=0177e11a"></script>
 </body>
 </html>

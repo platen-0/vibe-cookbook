@@ -8,6 +8,8 @@ import {
 } from '@firebase/rules-unit-testing';
 import {
   arrayUnion,
+  deleteField,
+  deleteDoc,
   doc,
   getDoc,
   setDoc,
@@ -108,8 +110,8 @@ beforeEach(async () => {
         recipeId: 'shared_recipe',
         active: true,
         allowCopy: true,
-        primaryPolicyId: 'seed-policy',
-        policyIds: ['seed-policy']
+        grantKind: 'kitchen',
+        kitchenId: 'schreiber'
       })
     ]);
   });
@@ -120,14 +122,21 @@ after(async () => {
 });
 
 function authed(uid, email = `${uid}@example.com`) {
-  return environment.authenticatedContext(uid, { email }).firestore();
+  return environment.authenticatedContext(uid, {
+    email,
+    email_verified: true
+  }).firestore();
 }
 
-test('legacy and public recipes remain public while private recipes require access', async () => {
+test('ownerless legacy recipes fail closed while explicit public recipes remain public', async () => {
   const anonymous = environment.unauthenticatedContext().firestore();
-  await assertSucceeds(getDoc(doc(anonymous, 'recipes/legacy')));
+  await assertFails(getDoc(doc(anonymous, 'recipes/legacy')));
   await assertSucceeds(getDoc(doc(anonymous, 'recipes/public_recipe')));
   await assertFails(getDoc(doc(anonymous, 'recipes/private_recipe')));
+  await assertSucceeds(getDoc(doc(
+    authed('migration-editor', 'taladani@gmail.com'),
+    'recipes/legacy'
+  )));
   await assertSucceeds(getDoc(doc(authed('tal'), 'recipes/private_recipe')));
   await assertSucceeds(getDoc(doc(authed('member'), 'recipes/shared_recipe')));
   await assertFails(getDoc(doc(authed('outsider'), 'recipes/shared_recipe')));
@@ -172,6 +181,25 @@ test('owners and kitchen admins edit shared recipes; members and outsiders canno
   }));
   await assertFails(updateDoc(doc(authed('outsider'), 'recipes/shared_recipe'), {
     notes: 'outsider edit'
+  }));
+});
+
+test('delegated recipe editors cannot change ACLs, publish, or delete the owner recipe', async () => {
+  const adminDb = authed('admin');
+  await assertFails(updateDoc(doc(adminDb, 'recipes/shared_recipe'), {
+    visibility: 'public'
+  }));
+  await assertFails(updateDoc(doc(adminDb, 'recipes/shared_recipe'), {
+    editorUids: ['tal', 'admin', 'outsider']
+  }));
+  await assertFails(updateDoc(doc(adminDb, 'recipes/shared_recipe'), {
+    sharedKitchenIds: ['schreiber', 'forged-kitchen']
+  }));
+  await assertFails(deleteDoc(doc(adminDb, 'recipes/shared_recipe')));
+
+  await assertSucceeds(updateDoc(doc(authed('tal'), 'recipes/shared_recipe'), {
+    visibility: 'public',
+    editorUids: ['tal', 'admin', 'einav']
   }));
 });
 
@@ -300,6 +328,53 @@ test('only kitchen admins can issue kitchen invitations', async () => {
     ...invitation,
     inviterUid: 'member'
   }));
+  await assertFails(setDoc(doc(authed('admin'), 'invitations/owner_role_invite'), {
+    ...invitation,
+    role: 'owner'
+  }));
+});
+
+test('an invitation target cannot retarget or rewrite the invitation while accepting it', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'invitations/rewrite_attempt'), {
+      type: 'kitchen',
+      title: 'שרייבר',
+      kitchenId: 'schreiber',
+      kitchenName: 'שרייבר',
+      role: 'member',
+      targetUid: 'outsider',
+      targetEmail: null,
+      inviterUid: 'admin',
+      status: 'pending'
+    });
+  });
+
+  await assertFails(updateDoc(
+    doc(authed('outsider'), 'invitations/rewrite_attempt'),
+    {
+      status: 'accepted',
+      acceptedByUid: 'outsider',
+      kitchenId: 'forged-kitchen',
+      role: 'owner'
+    }
+  ));
+  await assertSucceeds(updateDoc(
+    doc(authed('outsider'), 'invitations/rewrite_attempt'),
+    {
+      status: 'accepted',
+      acceptedByUid: 'outsider'
+    }
+  ));
+});
+
+test('email hash directory is not an authorization oracle', async () => {
+  await assertFails(setDoc(
+    doc(authed('outsider'), 'emailDirectory/forged-victim-hash'),
+    { uid: 'outsider' }
+  ));
+  await assertFails(getDoc(
+    doc(authed('outsider'), 'emailDirectory/existing-hash')
+  ));
 });
 
 test('shared kitchen names can be looked up exactly without exposing membership', async () => {
@@ -339,6 +414,56 @@ test('shared kitchen names can be looked up exactly without exposing membership'
   ));
 });
 
+test('kitchen admins cannot bypass the approved join flow or rewrite owner roles', async () => {
+  const adminDb = authed('admin');
+  await assertFails(updateDoc(doc(adminDb, 'kitchens/schreiber'), {
+    memberIds: arrayUnion('outsider'),
+    'memberRoles.outsider': 'member'
+  }));
+  await assertFails(updateDoc(doc(adminDb, 'kitchens/schreiber'), {
+    'memberRoles.tal': 'member'
+  }));
+  await assertSucceeds(updateDoc(doc(adminDb, 'kitchens/schreiber'), {
+    recipeIds: arrayUnion('another_shared_recipe')
+  }));
+});
+
+test('only the kitchen owner can revoke a non-owner membership', async () => {
+  const ownerDb = authed('tal');
+  await assertSucceeds(updateDoc(doc(ownerDb, 'kitchens/schreiber'), {
+    memberIds: ['tal', 'einav', 'admin'],
+    'memberRoles.member': deleteField()
+  }));
+  await assertFails(getDoc(doc(authed('member'), 'kitchens/schreiber')));
+  await assertFails(getDoc(doc(authed('member'), 'recipes/shared_recipe')));
+
+  await assertFails(updateDoc(doc(authed('admin'), 'kitchens/schreiber'), {
+    memberIds: ['tal', 'einav'],
+    'memberRoles.admin': deleteField()
+  }));
+  await assertFails(updateDoc(doc(ownerDb, 'kitchens/schreiber'), {
+    memberIds: ['einav', 'admin'],
+    'memberRoles.tal': deleteField()
+  }));
+});
+
+test('kitchen directory admins can add only their own verified admin membership', async () => {
+  await assertFails(updateDoc(doc(authed('admin'), 'kitchenDirectory/schreiber-key'), {
+    adminUids: arrayUnion('outsider')
+  }));
+
+  await environment.withSecurityRulesDisabled(async context => {
+    await updateDoc(doc(context.firestore(), 'kitchens/schreiber'), {
+      memberIds: arrayUnion('outsider'),
+      'memberRoles.outsider': 'admin'
+    });
+  });
+  await assertSucceeds(updateDoc(
+    doc(authed('outsider'), 'kitchenDirectory/schreiber-key'),
+    { adminUids: arrayUnion('outsider') }
+  ));
+});
+
 test('admin approval directly and atomically grants kitchen membership and recipe access', async () => {
   const request = {
     targetKind: 'kitchen',
@@ -369,7 +494,8 @@ test('admin approval directly and atomically grants kitchen membership and recip
   const approval = writeBatch(adminDb);
   approval.update(doc(adminDb, 'kitchens/schreiber'), {
     memberIds: arrayUnion('outsider'),
-    'memberRoles.outsider': 'member'
+    'memberRoles.outsider': 'member',
+    lastApprovedAccessRequestId: 'valid-request'
   });
   approval.update(doc(adminDb, 'kitchenAccessRequests/valid-request'), {
     status: 'approved',
@@ -439,7 +565,8 @@ test('direct approval materializes access for a full kitchen in one batch', asyn
   const approval = writeBatch(adminDb);
   approval.update(doc(adminDb, 'kitchens/schreiber'), {
     memberIds: arrayUnion('outsider'),
-    'memberRoles.outsider': 'member'
+    'memberRoles.outsider': 'member',
+    lastApprovedAccessRequestId: 'bulk-request'
   });
   approval.update(doc(adminDb, 'kitchenAccessRequests/bulk-request'), {
     status: 'approved',
@@ -502,6 +629,36 @@ test('an invited user can atomically join with exactly the invited role', async 
   await assertSucceeds(getDoc(doc(db, 'recipes/shared_recipe')));
 });
 
+test('an invited user cannot alter existing member roles while joining', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'invitations/role_tamper_invite'), {
+      type: 'kitchen',
+      title: 'שרייבר',
+      kitchenId: 'schreiber',
+      kitchenName: 'שרייבר',
+      role: 'member',
+      targetUid: 'outsider',
+      targetEmail: null,
+      inviterUid: 'admin',
+      status: 'pending'
+    });
+  });
+
+  const db = authed('outsider');
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'kitchens/schreiber'), {
+    memberIds: arrayUnion('outsider'),
+    'memberRoles.outsider': 'member',
+    'memberRoles.tal': 'member',
+    lastAcceptedInvitationId: 'role_tamper_invite'
+  });
+  batch.update(doc(db, 'invitations/role_tamper_invite'), {
+    status: 'accepted',
+    acceptedByUid: 'outsider'
+  });
+  await assertFails(batch.commit());
+});
+
 test('recipe owners can grant access but arbitrary users cannot', async () => {
   await assertSucceeds(setDoc(doc(authed('tal'), 'users/einav/recipeAccess/private_recipe'), {
     recipeId: 'private_recipe',
@@ -514,6 +671,191 @@ test('recipe owners can grant access but arbitrary users cannot', async () => {
     active: true,
     primaryPolicyId: 'policy',
     policyIds: ['policy']
+  }));
+});
+
+test('a targeted share policy cannot be reused to claim a different recipe', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'sharePolicies/outsider_shared_policy'), {
+      ownerUid: 'tal',
+      targetType: 'user',
+      targetId: 'outsider',
+      targetUid: 'outsider',
+      targetEmail: null,
+      scopeType: 'recipe',
+      scopeValue: 'shared_recipe',
+      permissions: { view: true, allowCopy: true },
+      active: true
+    });
+  });
+
+  const outsiderDb = authed('outsider');
+  await assertSucceeds(setDoc(
+    doc(outsiderDb, 'users/outsider/recipeAccess/shared_recipe'),
+    {
+      recipeId: 'shared_recipe',
+      active: true,
+      primaryPolicyId: 'outsider_shared_policy',
+      policyIds: ['outsider_shared_policy']
+    }
+  ));
+  await assertFails(setDoc(
+    doc(outsiderDb, 'users/outsider/recipeAccess/private_recipe'),
+    {
+      recipeId: 'private_recipe',
+      active: true,
+      primaryPolicyId: 'outsider_shared_policy',
+      policyIds: ['outsider_shared_policy']
+    }
+  ));
+});
+
+test('disabled or deleted policies immediately stop authorizing stale grants', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'sharePolicies/revocable_policy'), {
+      ownerUid: 'tal',
+      targetType: 'user',
+      targetId: 'outsider',
+      targetUid: 'outsider',
+      targetEmail: null,
+      scopeType: 'recipe',
+      scopeValue: 'private_recipe',
+      includeFuture: false,
+      recipeIds: ['private_recipe'],
+      permissions: { view: true, allowCopy: true },
+      active: true
+    });
+    await setDoc(doc(db, 'users/outsider/recipeAccess/private_recipe'), {
+      recipeId: 'private_recipe',
+      active: true,
+      primaryPolicyId: 'revocable_policy',
+      policyIds: ['revocable_policy']
+    });
+  });
+
+  const outsiderDb = authed('outsider');
+  await assertSucceeds(getDoc(doc(outsiderDb, 'recipes/private_recipe')));
+  await assertSucceeds(updateDoc(
+    doc(authed('tal'), 'sharePolicies/revocable_policy'),
+    { active: false }
+  ));
+  await assertFails(getDoc(doc(outsiderDb, 'recipes/private_recipe')));
+  await assertSucceeds(deleteDoc(
+    doc(authed('tal'), 'sharePolicies/revocable_policy')
+  ));
+  await assertFails(getDoc(doc(outsiderDb, 'recipes/private_recipe')));
+});
+
+test('non-future collection policies grant only the enumerated recipes', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'sharePolicies/quick_snapshot'), {
+      ownerUid: 'tal',
+      targetType: 'user',
+      targetId: 'outsider',
+      targetUid: 'outsider',
+      targetEmail: null,
+      scopeType: 'tag',
+      scopeValue: 'quick',
+      includeFuture: false,
+      recipeIds: ['shared_recipe'],
+      permissions: { view: true, allowCopy: true },
+      active: true
+    });
+    await setDoc(doc(context.firestore(), 'recipes/future_quick_recipe'), {
+      name: 'Later quick recipe',
+      ownerUid: 'tal',
+      homeKitchenId: 'personal_tal',
+      visibility: 'private',
+      sharedKitchenIds: [],
+      editorUids: [],
+      tags: ['quick']
+    });
+  });
+
+  const outsiderDb = authed('outsider');
+  await assertSucceeds(setDoc(
+    doc(outsiderDb, 'users/outsider/recipeAccess/shared_recipe'),
+    {
+      recipeId: 'shared_recipe',
+      active: true,
+      primaryPolicyId: 'quick_snapshot',
+      policyIds: ['quick_snapshot']
+    }
+  ));
+  await assertFails(setDoc(
+    doc(outsiderDb, 'users/outsider/recipeAccess/future_quick_recipe'),
+    {
+      recipeId: 'future_quick_recipe',
+      active: true,
+      primaryPolicyId: 'quick_snapshot',
+      policyIds: ['quick_snapshot']
+    }
+  ));
+});
+
+test('new share policies require an unambiguous target and a bounded recipe snapshot', async () => {
+  const ownerDb = authed('tal');
+  const basePolicy = {
+    ownerUid: 'tal',
+    targetType: 'user',
+    targetId: 'outsider',
+    targetUid: 'outsider',
+    targetEmail: null,
+    scopeType: 'all',
+    scopeValue: null,
+    includeFuture: false,
+    recipeIds: ['private_recipe'],
+    permissions: { view: true, allowCopy: true },
+    active: true
+  };
+  await assertSucceeds(setDoc(
+    doc(ownerDb, 'sharePolicies/valid_new_policy'),
+    basePolicy
+  ));
+  await assertFails(setDoc(
+    doc(ownerDb, 'sharePolicies/ambiguous_target'),
+    {
+      ...basePolicy,
+      targetEmail: 'outsider@example.com'
+    }
+  ));
+  await assertFails(setDoc(
+    doc(ownerDb, 'sharePolicies/missing_snapshot'),
+    {
+      ...basePolicy,
+      recipeIds: null
+    }
+  ));
+});
+
+test('share policy owners cannot reassign policy ownership', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'sharePolicies/owned_policy'), {
+      ownerUid: 'tal',
+      targetType: 'user',
+      targetId: 'outsider',
+      targetUid: 'outsider',
+      targetEmail: null,
+      scopeType: 'all',
+      scopeValue: null,
+      permissions: { view: true, allowCopy: true },
+      active: true
+    });
+  });
+
+  await assertFails(updateDoc(doc(authed('tal'), 'sharePolicies/owned_policy'), {
+    ownerUid: 'einav'
+  }));
+});
+
+test('unverified email claims do not receive legacy editor authority', async () => {
+  const db = environment.authenticatedContext('forged-editor', {
+    email: 'taladani@gmail.com',
+    email_verified: false
+  }).firestore();
+  await assertFails(updateDoc(doc(db, 'recipes/legacy'), {
+    name: 'forged edit'
   }));
 });
 

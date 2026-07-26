@@ -23,6 +23,16 @@
       "id": "7bcc238db5fa44f188399a458d8a0d43"
     }
   ],
+  "ratelimits": [
+    {
+      "name": "IMPORT_RATE_LIMITER",
+      "namespace_id": "181961247796",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    }
+  ],
   "secrets": {
     "required": [
       "OPENAI_API_KEY",

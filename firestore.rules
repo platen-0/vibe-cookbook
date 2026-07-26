@@ -6,8 +6,14 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isAllowedEditor() {
+    function hasVerifiedEmail() {
       return signedIn() &&
+             request.auth.token.email is string &&
+             request.auth.token.email_verified == true;
+    }
+
+    function isAllowedEditor() {
+      return hasVerifiedEmail() &&
              request.auth.token.email in [
                'taladani@gmail.com',
                'eliavschreiber@gmail.com',
@@ -39,14 +45,85 @@ service cloud.firestore {
              kitchenRole(kitchenId) in ['owner', 'admin'];
     }
 
-    function hasRecipeAccess(recipeId) {
+    function isCurrentPolicyTarget(policy) {
+      return policy.get('targetUid', '') == request.auth.uid ||
+             (
+               hasVerifiedEmail() &&
+               policy.get('targetEmail', '') == request.auth.token.email
+             );
+    }
+
+    function policyCoversRecipe(policy, recipe, recipeId) {
+      return policy.get('active', false) == true &&
+             policy.get('ownerUid', '') == recipe.get('ownerUid', '') &&
+             policy.get('permissions', {}).get('view', false) == true &&
+             (
+               policy.get('scopeType', '') == 'recipe' ||
+               policy.get('includeFuture', false) == true ||
+               (
+                 policy.get('recipeIds', []) is list &&
+                 recipeId in policy.get('recipeIds', [])
+               )
+             ) &&
+             (
+               (
+                 policy.get('scopeType', '') == 'recipe' &&
+                 policy.get('scopeValue', '') == recipeId
+               ) ||
+               (
+                 policy.get('scopeType', '') == 'category' &&
+                 (
+                   policy.get('scopeValue', '') == recipe.get('category', '') ||
+                   policy.get('scopeValue', '') == recipe.get('mainCategory', '')
+                 )
+               ) ||
+               (
+                 policy.get('scopeType', '') == 'tag' &&
+                 recipe.get('tags', []) is list &&
+                 policy.get('scopeValue', '') in recipe.get('tags', [])
+               ) ||
+               policy.get('scopeType', '') == 'all'
+             );
+    }
+
+    function hasActiveKitchenAccess(grant, recipe, recipeId) {
+      let kitchen = get(
+        /databases/$(database)/documents/kitchens/$(grant.kitchenId)
+      ).data;
+      return grant.get('grantKind', '') == 'kitchen' &&
+             grant.get('kitchenId', '') in recipe.get('sharedKitchenIds', []) &&
+             request.auth.uid in kitchen.get('memberIds', []) &&
+             recipeId in kitchen.get('recipeIds', []);
+    }
+
+    function hasActivePolicyAccess(grant, recipe, recipeId) {
+      let policy = get(
+        /databases/$(database)/documents/sharePolicies/$(grant.primaryPolicyId)
+      ).data;
+      return grant.get('primaryPolicyId', '') != '' &&
+             isCurrentPolicyTarget(policy) &&
+             policyCoversRecipe(policy, recipe, recipeId);
+    }
+
+    function hasRecipeAccess(recipe, recipeId) {
+      let grant = get(
+        /databases/$(database)/documents/users/$(request.auth.uid)/recipeAccess/$(recipeId)
+      ).data;
       return signedIn() &&
              exists(
                /databases/$(database)/documents/users/$(request.auth.uid)/recipeAccess/$(recipeId)
              ) &&
-             get(
-               /databases/$(database)/documents/users/$(request.auth.uid)/recipeAccess/$(recipeId)
-             ).data.active != false;
+             grant.get('active', false) == true &&
+             (
+               (
+                 grant.get('grantKind', '') == 'kitchen' &&
+                 hasActiveKitchenAccess(grant, recipe, recipeId)
+               ) ||
+               (
+                 grant.get('primaryPolicyId', '') != '' &&
+                 hasActivePolicyAccess(grant, recipe, recipeId)
+               )
+             );
     }
 
     function ownsRecipeData(data) {
@@ -63,10 +140,13 @@ service cloud.firestore {
     }
 
     function canReadRecipeData(data, recipeId) {
-      return !('ownerUid' in data) ||
-             data.visibility == 'public' ||
+      return data.visibility == 'public' ||
              ownsRecipeData(data) ||
-             hasRecipeAccess(recipeId);
+             hasRecipeAccess(data, recipeId) ||
+             (
+               !('ownerUid' in data) &&
+               isAllowedEditor()
+             );
     }
 
     function hasProtectedHumanText(data) {
@@ -83,43 +163,46 @@ service cloud.firestore {
              hasProtectedHumanText(request.resource.data);
     }
 
+    function recipeAccessControlIsUnchanged() {
+      return request.resource.data.get('visibility', 'private') ==
+               resource.data.get('visibility', 'private') &&
+             request.resource.data.get('sharedKitchenIds', []) ==
+               resource.data.get('sharedKitchenIds', []) &&
+             request.resource.data.get('editorUids', []) ==
+               resource.data.get('editorUids', []) &&
+             request.resource.data.get('sharePermissions', {}) ==
+               resource.data.get('sharePermissions', {});
+    }
+
     match /recipes/{recipeId} {
-      // Legacy documents stay public until the audited ownership migration.
+      // Ownerless legacy documents are never public. Verified migration editors
+      // retain read access only so an administrator can finish a repair.
       allow read: if canReadRecipeData(resource.data, recipeId);
 
-      allow create: if (
-                      profileComplete() &&
-                      request.resource.data.ownerUid == request.auth.uid &&
-                      request.resource.data.visibility in ['private', 'public'] &&
-                      request.resource.data.tags is list
-                    ) ||
-                    (
-                      isAllowedEditor() &&
-                      !('ownerUid' in request.resource.data)
-                    );
+      allow create: if profileComplete() &&
+                       request.resource.data.ownerUid == request.auth.uid &&
+                       request.resource.data.homeKitchenId ==
+                         getAfter(
+                           /databases/$(database)/documents/users/$(request.auth.uid)
+                         ).data.personalKitchenId &&
+                       request.resource.data.visibility in ['private', 'public'] &&
+                       request.resource.data.get('sharedKitchenIds', []) == [] &&
+                       request.resource.data.get('editorUids', []) == [] &&
+                       request.resource.data.tags is list;
 
-      allow update: if (
-                      ('ownerUid' in resource.data) &&
-                      canEditRecipeData(resource.data) &&
-                      request.resource.data.ownerUid == resource.data.ownerUid &&
-                      request.resource.data.homeKitchenId == resource.data.homeKitchenId &&
-                      request.resource.data.tags is list &&
-                      humanTextPrecedenceIsPreserved()
-                    ) ||
-                    (
-                      !('ownerUid' in resource.data) &&
-                      isAllowedEditor() &&
-                      humanTextPrecedenceIsPreserved()
-                    );
+      allow update: if ('ownerUid' in resource.data) &&
+                       canEditRecipeData(resource.data) &&
+                       request.resource.data.ownerUid == resource.data.ownerUid &&
+                       request.resource.data.homeKitchenId == resource.data.homeKitchenId &&
+                       request.resource.data.tags is list &&
+                       humanTextPrecedenceIsPreserved() &&
+                       (
+                         ownsRecipeData(resource.data) ||
+                         recipeAccessControlIsUnchanged()
+                       );
 
-      allow delete: if (
-                      ('ownerUid' in resource.data) &&
-                      canEditRecipeData(resource.data)
-                    ) ||
-                    (
-                      !('ownerUid' in resource.data) &&
-                      isAllowedEditor()
-                    );
+      allow delete: if ('ownerUid' in resource.data) &&
+                       ownsRecipeData(resource.data);
 
       match /revisions/{revisionId} {
         function parentRecipe() {
@@ -156,16 +239,15 @@ service cloud.firestore {
           let policy = get(
             /databases/$(database)/documents/sharePolicies/$(policyId)
           ).data;
+          let recipe = get(
+            /databases/$(database)/documents/recipes/$(recipeId)
+          ).data;
           return signedIn() &&
                  request.auth.uid == userId &&
-                 policy.active == true &&
-                 (
-                   policy.targetUid == request.auth.uid ||
-                   (
-                     policy.targetEmail == request.auth.token.email &&
-                     policy.targetEmail != null
-                   )
-                 );
+                 request.resource.data.recipeId == recipeId &&
+                 request.resource.data.active == true &&
+                 isCurrentPolicyTarget(policy) &&
+                 policyCoversRecipe(policy, recipe, recipeId);
         }
 
         function targetIsClaimingKitchenAccess() {
@@ -249,14 +331,10 @@ service cloud.firestore {
     }
 
     match /emailDirectory/{emailHash} {
-      allow get: if signedIn();
-      allow list: if false;
-      allow create: if signedIn() &&
-                       request.resource.data.uid == request.auth.uid;
-      allow update: if signedIn() &&
-                       resource.data.uid == request.auth.uid &&
-                       request.resource.data.uid == request.auth.uid;
-      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+      // Retired: Firestore Rules cannot prove that a client-supplied SHA-256
+      // document ID belongs to request.auth.token.email. Email invitations use
+      // the verified Firebase Auth email claim directly instead.
+      allow read, write: if false;
     }
 
     match /kitchenDirectory/{lookupKey} {
@@ -277,6 +355,23 @@ service cloud.firestore {
       allow list: if false;
       allow create: if validDirectoryCreate();
       allow update: if isKitchenAdmin(resource.data.kitchenId) &&
+                       request.resource.data.adminUids is list &&
+                       (
+                         (
+                           request.auth.uid in resource.data.adminUids &&
+                           request.resource.data.adminUids ==
+                             resource.data.adminUids
+                         ) ||
+                         (
+                           !(request.auth.uid in resource.data.adminUids) &&
+                           request.auth.uid in request.resource.data.adminUids &&
+                           request.resource.data.adminUids.hasAll(
+                             resource.data.adminUids
+                           ) &&
+                           request.resource.data.adminUids.size() ==
+                             resource.data.adminUids.size() + 1
+                         )
+                       ) &&
                        request.resource.data.diff(resource.data)
                          .affectedKeys().hasOnly(['adminUids', 'updatedAt']);
       allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
@@ -288,6 +383,8 @@ service cloud.firestore {
                request.resource.data.ownerUid == request.auth.uid &&
                request.resource.data.memberIds == [request.auth.uid] &&
                request.resource.data.memberRoles[request.auth.uid] == 'owner' &&
+               request.resource.data.memberRoles.keys()
+                 .hasOnly([request.auth.uid]) &&
                request.resource.data.type in ['personal', 'shared'];
       }
 
@@ -305,7 +402,10 @@ service cloud.firestore {
                invitationBefore.kitchenId == kitchenId &&
                (
                  invitationBefore.targetUid == request.auth.uid ||
-                 invitationBefore.targetEmail == request.auth.token.email
+                 (
+                   hasVerifiedEmail() &&
+                   invitationBefore.targetEmail == request.auth.token.email
+                 )
                ) &&
                !(request.auth.uid in resource.data.memberIds) &&
                request.auth.uid in request.resource.data.memberIds &&
@@ -313,6 +413,11 @@ service cloud.firestore {
                  resource.data.memberIds.size() + 1 &&
                request.resource.data.memberRoles[request.auth.uid] ==
                  invitationBefore.role &&
+               request.resource.data.memberRoles.diff(resource.data.memberRoles)
+                 .affectedKeys().hasOnly([request.auth.uid]) &&
+               request.resource.data.ownerUid == resource.data.ownerUid &&
+               resource.data.ownerUid in request.resource.data.memberIds &&
+               request.resource.data.memberRoles[resource.data.ownerUid] == 'owner' &&
                request.resource.data.diff(resource.data).affectedKeys().hasOnly([
                  'memberIds',
                  'memberRoles',
@@ -321,13 +426,106 @@ service cloud.firestore {
                ]);
       }
 
+      function validApprovedAccessRequestJoin() {
+        let accessRequestId =
+          request.resource.data.get('lastApprovedAccessRequestId', '');
+        let accessRequestBefore = get(
+          /databases/$(database)/documents/kitchenAccessRequests/$(accessRequestId)
+        ).data;
+        let accessRequestAfter = getAfter(
+          /databases/$(database)/documents/kitchenAccessRequests/$(accessRequestId)
+        ).data;
+        let requesterUid = accessRequestBefore.requesterUid;
+        return accessRequestId != '' &&
+               isKitchenAdmin(kitchenId) &&
+               accessRequestBefore.status == 'pending' &&
+               accessRequestAfter.status == 'approved' &&
+               accessRequestAfter.resolverUid == request.auth.uid &&
+               accessRequestAfter.resolvedKitchenId == kitchenId &&
+               request.auth.uid in accessRequestBefore.recipientUids &&
+               (
+                 accessRequestBefore.get('targetKitchenId', '') == '' ||
+                 accessRequestBefore.targetKitchenId == kitchenId
+               ) &&
+               !(requesterUid in resource.data.memberIds) &&
+               requesterUid in request.resource.data.memberIds &&
+               request.resource.data.memberIds.size() ==
+                 resource.data.memberIds.size() + 1 &&
+               request.resource.data.memberRoles[requesterUid] == 'member' &&
+               request.resource.data.memberRoles.diff(resource.data.memberRoles)
+                 .affectedKeys().hasOnly([requesterUid]) &&
+               request.resource.data.ownerUid == resource.data.ownerUid &&
+               resource.data.ownerUid in request.resource.data.memberIds &&
+               request.resource.data.memberRoles[resource.data.ownerUid] == 'owner' &&
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'memberIds',
+                 'memberRoles',
+                 'lastApprovedAccessRequestId',
+                 'updatedAt'
+               ]);
+      }
+
+      function validRecipeIndexUpdate() {
+        return isKitchenAdmin(kitchenId) &&
+               request.resource.data.ownerUid == resource.data.ownerUid &&
+               resource.data.ownerUid in request.resource.data.memberIds &&
+               request.resource.data.memberRoles[resource.data.ownerUid] == 'owner' &&
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'recipeIds',
+                 'updatedAt'
+               ]);
+      }
+
+      function validMemberRemoval() {
+        let removedUids =
+          resource.data.memberIds.removeAll(request.resource.data.memberIds);
+        let removedUid = removedUids[0];
+        return signedIn() &&
+               request.auth.uid == resource.data.ownerUid &&
+               removedUids.size() == 1 &&
+               removedUid != resource.data.ownerUid &&
+               resource.data.memberIds.hasAll(request.resource.data.memberIds) &&
+               request.resource.data.memberIds.size() ==
+                 resource.data.memberIds.size() - 1 &&
+               !(removedUid in request.resource.data.memberRoles) &&
+               request.resource.data.memberRoles.diff(resource.data.memberRoles)
+                 .affectedKeys().hasOnly([removedUid]) &&
+               request.resource.data.ownerUid == resource.data.ownerUid &&
+               resource.data.ownerUid in request.resource.data.memberIds &&
+               request.resource.data.memberRoles[resource.data.ownerUid] == 'owner' &&
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'memberIds',
+                 'memberRoles',
+                 'updatedAt'
+               ]);
+      }
+
+      function validPersonalKitchenRepair() {
+        return signedIn() &&
+               resource.data.ownerUid == request.auth.uid &&
+               resource.data.type == 'personal' &&
+               request.resource.data.ownerUid == request.auth.uid &&
+               request.resource.data.type == 'personal' &&
+               request.resource.data.memberIds == [request.auth.uid] &&
+               request.resource.data.memberRoles[request.auth.uid] == 'owner' &&
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'name',
+                 'type',
+                 'ownerUid',
+                 'memberIds',
+                 'memberRoles',
+                 'createdAt',
+                 'updatedAt'
+               ]);
+      }
+
       allow get, list: if signedIn() && request.auth.uid in resource.data.memberIds;
       allow create: if validNewKitchen();
-      allow update: if (
-                      isKitchenAdmin(kitchenId) &&
-                      request.resource.data.ownerUid == resource.data.ownerUid
-                    ) ||
-                    validInvitationJoin();
+      allow update: if validRecipeIndexUpdate() ||
+                       validPersonalKitchenRepair() ||
+                       validInvitationJoin() ||
+                       validApprovedAccessRequestJoin() ||
+                       validMemberRemoval();
       allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
     }
 
@@ -337,27 +535,50 @@ service cloud.firestore {
                (
                  data.targetUid == request.auth.uid ||
                  (
+                   hasVerifiedEmail() &&
                    data.targetEmail == request.auth.token.email &&
                    data.targetEmail != null
                  )
                );
       }
 
+      function hasValidInvitationTarget(data) {
+        return (
+                 data.targetUid is string &&
+                 data.targetUid != request.auth.uid &&
+                 data.targetEmail == null
+               ) ||
+               (
+                 data.targetUid == null &&
+                 data.targetEmail is string &&
+                 data.targetEmail != request.auth.token.email
+               );
+      }
+
+      function validRecipeShareInvitation() {
+        let policy = get(
+          /databases/$(database)/documents/sharePolicies/$(
+            request.resource.data.get('sharePolicyId', '')
+          )
+        ).data;
+        return request.resource.data.type == 'recipe-share' &&
+               policy.ownerUid == request.auth.uid &&
+               request.resource.data.targetUid == policy.targetUid &&
+               request.resource.data.targetEmail == policy.targetEmail;
+      }
+
       function inviterMayCreate() {
         return signedIn() &&
                request.resource.data.inviterUid == request.auth.uid &&
                request.resource.data.status == 'pending' &&
+               hasValidInvitationTarget(request.resource.data) &&
                (
                  (
                    request.resource.data.type == 'kitchen' &&
-                   isKitchenAdmin(request.resource.data.kitchenId)
+                   isKitchenAdmin(request.resource.data.kitchenId) &&
+                   request.resource.data.role in ['member', 'admin']
                  ) ||
-                 (
-                   request.resource.data.type == 'recipe-share' &&
-                   get(
-                     /databases/$(database)/documents/sharePolicies/$(request.resource.data.sharePolicyId)
-                   ).data.ownerUid == request.auth.uid
-                 )
+                 validRecipeShareInvitation()
                );
       }
 
@@ -370,11 +591,34 @@ service cloud.firestore {
       allow update: if (
                       isInvitationTarget(resource.data) &&
                       resource.data.status == 'pending' &&
-                      request.resource.data.status in ['accepted', 'declined']
+                      (
+                        (
+                          request.resource.data.status == 'accepted' &&
+                          request.resource.data.acceptedByUid == request.auth.uid &&
+                          request.resource.data.diff(resource.data)
+                            .affectedKeys().hasOnly([
+                              'status',
+                              'acceptedByUid',
+                              'acceptedAt'
+                            ])
+                        ) ||
+                        (
+                          request.resource.data.status == 'declined' &&
+                          request.resource.data.declinedByUid == request.auth.uid &&
+                          request.resource.data.diff(resource.data)
+                            .affectedKeys().hasOnly([
+                              'status',
+                              'declinedByUid',
+                              'declinedAt'
+                            ])
+                        )
+                      )
                     ) ||
                     (
                       resource.data.inviterUid == request.auth.uid &&
-                      request.resource.data.status == 'cancelled'
+                      request.resource.data.status == 'cancelled' &&
+                      request.resource.data.diff(resource.data)
+                        .affectedKeys().hasOnly(['status', 'cancelledAt'])
                     );
       allow delete: if false;
     }
@@ -411,6 +655,21 @@ service cloud.firestore {
                );
       }
 
+      function approvedRequestIsMaterialized() {
+        let resolvedKitchenId =
+          request.resource.data.get('resolvedKitchenId', '');
+        let resolvedKitchen = getAfter(
+          /databases/$(database)/documents/kitchens/$(resolvedKitchenId)
+        ).data;
+        return resolvedKitchenId != '' &&
+               isKitchenAdmin(resolvedKitchenId) &&
+               resource.data.requesterUid in resolvedKitchen.memberIds &&
+               (
+                 resource.data.get('targetKitchenId', '') == '' ||
+                 resource.data.targetKitchenId == resolvedKitchenId
+               );
+      }
+
       function recipientMayResolve() {
         return signedIn() &&
                request.auth.uid in resource.data.recipientUids &&
@@ -424,7 +683,11 @@ service cloud.firestore {
                  'resolvedKitchenId',
                  'invitationId',
                  'updatedAt'
-               ]);
+               ]) &&
+               (
+                 request.resource.data.status == 'declined' ||
+                 approvedRequestIsMaterialized()
+               );
       }
 
       function requesterMayRetry() {
@@ -457,11 +720,37 @@ service cloud.firestore {
     }
 
     match /sharePolicies/{policyId} {
+      function hasValidPolicyTarget() {
+        return (
+                 request.resource.data.targetType == 'user' &&
+                 (
+                   (
+                     request.resource.data.targetUid is string &&
+                     request.resource.data.targetUid.size() > 0 &&
+                     request.resource.data.targetEmail == null
+                   ) ||
+                   (
+                     request.resource.data.targetEmail is string &&
+                     request.resource.data.targetEmail.size() > 3 &&
+                     request.resource.data.targetUid == null
+                   )
+                 )
+               ) ||
+               (
+                 request.resource.data.targetType == 'kitchen' &&
+                 request.resource.data.targetId is string &&
+                 request.resource.data.targetId.size() > 0 &&
+                 request.resource.data.targetUid == null &&
+                 request.resource.data.targetEmail == null
+               );
+      }
+
       allow get, list: if signedIn() &&
                          (
                            resource.data.ownerUid == request.auth.uid ||
                            resource.data.targetUid == request.auth.uid ||
                            (
+                             hasVerifiedEmail() &&
                              resource.data.targetEmail == request.auth.token.email &&
                              resource.data.targetEmail != null
                            ) ||
@@ -472,8 +761,16 @@ service cloud.firestore {
                          );
       allow create: if profileComplete() &&
                        request.resource.data.ownerUid == request.auth.uid &&
-                       request.resource.data.scopeType in ['recipe', 'category', 'tag', 'all'];
-      allow update, delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+                       hasValidPolicyTarget() &&
+                       request.resource.data.scopeType in ['recipe', 'category', 'tag', 'all'] &&
+                       request.resource.data.get('recipeIds', []) is list &&
+                       request.resource.data.get('recipeIds', []).size() <= 500 &&
+                       request.resource.data.active == true &&
+                       request.resource.data.get('permissions', {}).get('view', false) == true;
+      allow update: if signedIn() &&
+                       resource.data.ownerUid == request.auth.uid &&
+                       request.resource.data.ownerUid == resource.data.ownerUid;
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
     }
 
     match /cookingWorkspaces/{userId} {

@@ -77,6 +77,25 @@
     return [...new Set((Array.isArray(value) ? value : []).filter(Boolean).map(String))];
   }
 
+  function normalizeHttpUrl(value) {
+    try {
+      const url = new URL(String(value || ''));
+      return ['http:', 'https:'].includes(url.protocol) ? url.toString() : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function hostnameMatches(hostname, expectedDomain) {
+    const actual = String(hostname || '').toLowerCase().replace(/\.$/, '');
+    const expected = String(expectedDomain || '').toLowerCase().replace(/\.$/, '');
+    return Boolean(
+      actual &&
+      expected &&
+      (actual === expected || actual.endsWith(`.${expected}`))
+    );
+  }
+
   function normalizeRecipe(recipe = {}) {
     const visibility = VALID_VISIBILITIES.has(recipe.visibility)
       ? recipe.visibility
@@ -280,6 +299,8 @@
     normalizeFirstName,
     validateProfile,
     personalKitchenId,
+    normalizeHttpUrl,
+    hostnameMatches,
     normalizeRecipe,
     canViewRecipe,
     canEditRecipe,

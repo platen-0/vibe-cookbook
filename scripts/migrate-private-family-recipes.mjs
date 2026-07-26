@@ -170,28 +170,29 @@ async function fetchAuthUsers() {
 }
 
 function latestBackup() {
-  const filename = readdirSync(REPOSITORY_ROOT)
+  const filenames = readdirSync(REPOSITORY_ROOT)
     .filter(name => /^production-backup-\d{8}T\d{6}Z\.zip$/.test(name))
     .sort()
-    .at(-1);
-  if (!filename) throw new Error('No production backup was found');
-  const archivePath = join(REPOSITORY_ROOT, filename);
-  const manifest = JSON.parse(
-    execFileSync('unzip', ['-p', archivePath, 'data/manifest.json'], {
-      encoding: 'utf8',
-      maxBuffer: 2_000_000
-    })
-  );
-  const payload = JSON.parse(
-    execFileSync('unzip', ['-p', archivePath, 'data/recipes-normalized.json'], {
-      encoding: 'utf8',
-      maxBuffer: 30_000_000
-    })
-  );
-  if (manifest.recipeCount !== FAMILY_RECIPE_COUNT || payload.recipes?.length !== FAMILY_RECIPE_COUNT) {
-    throw new Error('Latest backup does not contain exactly 217 family recipes');
+    .reverse();
+  for (const filename of filenames) {
+    const archivePath = join(REPOSITORY_ROOT, filename);
+    const manifest = JSON.parse(
+      execFileSync('unzip', ['-p', archivePath, 'data/manifest.json'], {
+        encoding: 'utf8',
+        maxBuffer: 2_000_000
+      })
+    );
+    if (manifest.recipeCount !== FAMILY_RECIPE_COUNT) continue;
+    const payload = JSON.parse(
+      execFileSync('unzip', ['-p', archivePath, 'data/recipes-normalized.json'], {
+        encoding: 'utf8',
+        maxBuffer: 30_000_000
+      })
+    );
+    if (payload.recipes?.length !== FAMILY_RECIPE_COUNT) continue;
+    return { archivePath, manifest, recipes: payload.recipes };
   }
-  return { archivePath, manifest, recipes: payload.recipes };
+  throw new Error('No production backup contains exactly 217 family recipes');
 }
 
 function tagsFingerprint(recipes) {
@@ -370,6 +371,20 @@ const now = new Date().toISOString();
 const accessWrites = schreiberMemberIds.flatMap(uid =>
   familyRecipes.map(recipe => kitchenAccessWrite(uid, recipe.id, now))
 );
+let existingActiveAccessGrants = 0;
+let missingActiveAccessGrants = 0;
+for (const uid of schreiberMemberIds) {
+  const grants = await fetchCollection(`users/${uid}/recipeAccess`);
+  const activeIds = new Set(
+    grants
+      .filter(grant => grant.data.active !== false)
+      .map(grant => grant.id)
+  );
+  for (const recipe of familyRecipes) {
+    if (activeIds.has(recipe.id)) existingActiveAccessGrants += 1;
+    else missingActiveAccessGrants += 1;
+  }
+}
 const demoWrites = [];
 for (const demo of demoRecipes) {
   const existing = liveRecipes.find(recipe => recipe.id === demo.id);
@@ -403,6 +418,8 @@ const summary = {
   originalTagsFingerprint: tagsFingerprint(familyRecipes),
   schreiberMemberCount: schreiberMemberIds.length,
   accessGrantWrites: accessWrites.length,
+  existingActiveAccessGrants,
+  missingActiveAccessGrants,
   demoCreates: demoWrites.length,
   visibilityUpdates: visibilityWrites.length,
   resultingPublicDemoCount: demoRecipes.length

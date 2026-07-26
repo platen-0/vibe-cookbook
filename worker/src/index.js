@@ -63,7 +63,7 @@ export default {
       }
 
       const user = await authorizeUser(request, env);
-      enforceRateLimit(user.sub);
+      await enforceRateLimit(user.sub, url.pathname, env);
 
       if (request.method === 'POST' && url.pathname === '/extract') {
         const body = await readJsonBody(request);
@@ -886,6 +886,7 @@ export async function storeRecipeImage(input, user, env, workerOrigin = '') {
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(recipeId)) {
     throw new HttpError(400, 'Invalid recipe ID');
   }
+  await verifyFirestoreRecipeEditAccess(recipeId, user, env);
 
   let image;
   if (input.dataUrl) {
@@ -975,9 +976,13 @@ export async function signPrivateImages(input, user, env, workerOrigin = '') {
     key: normalizeOptionalString(item.key, 500)
   }));
   for (const image of normalized) {
+    const keyMatch = image.key.match(
+      /^recipes\/[A-Za-z0-9_-]+\/([A-Za-z0-9_-]{8,128})\.(?:jpg|png|webp)$/
+    );
     if (
       !/^[A-Za-z0-9_-]{8,128}$/.test(image.recipeId) ||
-      !/^recipes\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]{8,128}\.(?:jpg|png|webp)$/.test(image.key)
+      !keyMatch ||
+      keyMatch[1] !== image.recipeId
     ) {
       throw new HttpError(400, 'Invalid private image reference');
     }
@@ -995,6 +1000,9 @@ export async function signPrivateImages(input, user, env, workerOrigin = '') {
   for (const image of normalized) {
     const stored = await env.RECIPE_IMAGES.head(image.key);
     if (!stored) continue;
+    if (stored.metadata?.recipeId !== image.recipeId) {
+      throw new HttpError(403, 'Private image access was denied');
+    }
     urls[image.key] = await createSignedImageUrl(
       image.key,
       env,
@@ -1006,6 +1014,10 @@ export async function signPrivateImages(input, user, env, workerOrigin = '') {
 }
 
 async function verifyFirestoreRecipeAccess(recipeId, token, env) {
+  await fetchFirestoreRecipe(recipeId, token, env);
+}
+
+async function fetchFirestoreRecipe(recipeId, token, env) {
   const projectId = env.FIREBASE_PROJECT_ID || 'vibe-cookbook';
   const url =
     `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}` +
@@ -1013,10 +1025,37 @@ async function verifyFirestoreRecipeAccess(recipeId, token, env) {
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` }
   });
-  if (response.status === 403 || response.status === 404) {
+  if ([401, 403, 404].includes(response.status)) {
     throw new HttpError(403, 'Private image access was denied');
   }
   if (!response.ok) throw new HttpError(503, 'Could not verify private image access');
+  return response.json();
+}
+
+async function verifyFirestoreRecipeEditAccess(recipeId, user, env) {
+  const recipe = await fetchFirestoreRecipe(recipeId, user.token, env);
+  const fields = recipe?.fields || {};
+  const ownerUid = fields.ownerUid?.stringValue || '';
+  const editorUids = (fields.editorUids?.arrayValue?.values || [])
+    .map(value => value?.stringValue || '')
+    .filter(Boolean);
+  const canEditOwnedRecipe =
+    ownerUid && (ownerUid === user.sub || editorUids.includes(user.sub));
+  const canEditLegacyRecipe =
+    !ownerUid && isAuthorizedLegacyEditor(user.email, env);
+  if (!canEditOwnedRecipe && !canEditLegacyRecipe) {
+    throw new HttpError(403, 'Recipe image edit access was denied');
+  }
+}
+
+function isAuthorizedLegacyEditor(email, env) {
+  const allowed = new Set(
+    (env.AUTHORIZED_EMAILS || DEFAULT_EDITORS.join(','))
+      .split(',')
+      .map(value => value.trim().toLowerCase())
+      .filter(Boolean)
+  );
+  return allowed.has(String(email || '').trim().toLowerCase());
 }
 
 async function createSignedImageUrl(key, env, workerOrigin, expires) {
@@ -1606,15 +1645,23 @@ async function authorizeUser(request, env) {
   if (!authorization.startsWith('Bearer ')) throw new HttpError(401, 'Sign in to import recipes');
   const token = authorization.slice(7);
   const claims = await verifyFirebaseToken(token, env.FIREBASE_PROJECT_ID || 'vibe-cookbook');
-  if (!claims.email) throw new HttpError(403, 'A verified Google email is required');
+  if (!claims.email || claims.email_verified !== true) {
+    throw new HttpError(403, 'A verified Google email is required');
+  }
   return { ...claims, token };
 }
 
 async function verifyFirebaseToken(token, projectId) {
   const parts = token.split('.');
   if (parts.length !== 3) throw new HttpError(401, 'Invalid sign-in token');
-  const header = JSON.parse(new TextDecoder().decode(base64UrlToBytes(parts[0])));
-  const claims = JSON.parse(new TextDecoder().decode(base64UrlToBytes(parts[1])));
+  let header;
+  let claims;
+  try {
+    header = JSON.parse(new TextDecoder().decode(base64UrlToBytes(parts[0])));
+    claims = JSON.parse(new TextDecoder().decode(base64UrlToBytes(parts[1])));
+  } catch {
+    throw new HttpError(401, 'Invalid sign-in token');
+  }
   if (header.alg !== 'RS256' || !header.kid) throw new HttpError(401, 'Invalid sign-in token');
 
   const now = Math.floor(Date.now() / 1_000);
@@ -1624,7 +1671,11 @@ async function verifyFirebaseToken(token, projectId) {
   if (
     !audienceMatches ||
     claims.iss !== `https://securetoken.google.com/${projectId}` ||
+    typeof claims.sub !== 'string' ||
     !claims.sub ||
+    claims.sub.length > 128 ||
+    typeof claims.exp !== 'number' ||
+    typeof claims.iat !== 'number' ||
     claims.exp <= now ||
     claims.iat > now + 60
   ) {
@@ -1704,12 +1755,21 @@ async function readJsonBody(request) {
   }
 }
 
-function enforceRateLimit(userId) {
+async function enforceRateLimit(userId, pathname, env) {
+  const key = `${userId}:${pathname}`;
+  if (env.IMPORT_RATE_LIMITER?.limit) {
+    const result = await env.IMPORT_RATE_LIMITER.limit({ key });
+    if (!result.success) {
+      throw new HttpError(429, 'Too many imports. Try again shortly.');
+    }
+    return;
+  }
+
   const now = Date.now();
   const windowMs = 10 * 60 * 1_000;
-  const bucket = rateBuckets.get(userId);
+  const bucket = rateBuckets.get(key);
   if (!bucket || bucket.resetAt <= now) {
-    rateBuckets.set(userId, { count: 1, resetAt: now + windowMs });
+    rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
     return;
   }
   bucket.count += 1;

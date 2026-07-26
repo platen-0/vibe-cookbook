@@ -1,0 +1,12 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Firebase Storage is not used by this app. Keep the bucket closed so a
+    // future accidental client call cannot create a second, ungoverned image
+    // store alongside the Worker-protected path.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
