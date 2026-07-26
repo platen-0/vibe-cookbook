@@ -250,6 +250,7 @@
       favorites: 'מועדפים',
       addRecipe: 'הוסף מתכון',
       recipes: 'מתכונים',
+      loadingRecipes: 'טוען מתכונים…',
       recipe: 'מתכון',
       text: 'מתכון',
       link: 'קישור',
@@ -283,6 +284,7 @@
       favorites: 'Favorites',
       addRecipe: 'Add recipe',
       recipes: 'recipes',
+      loadingRecipes: 'Loading recipes…',
       recipe: 'Recipe',
       text: 'Recipe',
       link: 'Link',
@@ -478,7 +480,7 @@
       if (onboardingPreview) {
         requestAnimationFrame(() => openOnboardingModal(false));
       }
-      return;
+      return Promise.resolve();
     }
 
     if (IS_LOCAL_COOKING_PREVIEW || IS_LOCAL_V2_MOCK_PREVIEW) {
@@ -490,30 +492,54 @@
       canEdit = false;
       updateAuthUI();
       updateEditButtonsVisibility();
-      return;
+      return Promise.resolve();
     }
 
-    // Listen for auth state changes
-    auth.onAuthStateChanged(async (user) => {
-      currentUser = user;
-      canEdit = user && ALLOWED_EDITORS.includes(user.email);
-      userProfile = null;
-      stopV2Subscriptions();
-      updateAuthUI();
-      updateEditButtonsVisibility();
-      subscribeToCookingWorkspace(user);
-      if (COOKBOOK_V2_ENABLED) {
-        await initializeV2ForUser(user);
-        if (!IS_LOCAL_COOKING_PREVIEW && !IS_LOCAL_V2_MOCK_PREVIEW) {
-          try {
+    // Resolve the first auth event before the initial Firestore query. This
+    // prevents a signed-out load racing a signed-in load on hard refresh.
+    return new Promise(resolveInitialAuth => {
+      let isInitialAuthEvent = true;
+
+      auth.onAuthStateChanged(async (user) => {
+        const initialEvent = isInitialAuthEvent;
+        isInitialAuthEvent = false;
+        currentUser = user;
+        canEdit = user && ALLOWED_EDITORS.includes(user.email);
+        userProfile = null;
+        stopV2Subscriptions();
+        updateAuthUI();
+        updateEditButtonsVisibility();
+        subscribeToCookingWorkspace(user);
+
+        if (!initialEvent) {
+          recipeLoadRequestId += 1;
+          recipes = [];
+          showLoading(true);
+        }
+
+        try {
+          if (COOKBOOK_V2_ENABLED) await initializeV2ForUser(user);
+
+          if (!initialEvent && !IS_LOCAL_COOKING_PREVIEW && !IS_LOCAL_V2_MOCK_PREVIEW) {
             await loadRecipesFromFirestore();
             renderTagFilters();
             renderRecipes();
-          } catch (error) {
-            console.error('Failed to refresh recipes for the signed-in state:', error);
+            isInitialized = true;
+            if (currentUser && userProfile?.onboardingComplete) subscribeToV2Data();
+          }
+        } catch (error) {
+          console.error('Failed to refresh recipes for the signed-in state:', error);
+        } finally {
+          if (initialEvent) {
+            resolveInitialAuth();
+          } else {
+            showLoading(false);
           }
         }
-      }
+      }, error => {
+        console.error('Failed to resolve authentication state:', error);
+        resolveInitialAuth();
+      });
     });
   }
 
@@ -629,7 +655,7 @@
   }
 
   // Cookbook v2: user-bound recipes, personal libraries, and shared kitchens.
-  function stopV2Subscriptions() {
+  function stopV2Subscriptions({ resetData = true } = {}) {
     if (recipeReloadTimer) {
       window.clearTimeout(recipeReloadTimer);
       recipeReloadTimer = null;
@@ -638,6 +664,7 @@
       try { unsubscribe(); } catch (error) {}
     });
     v2Unsubscribers = [];
+    if (!resetData) return;
     userKitchens = [];
     kitchenRoles = {};
     favoriteIds = new Set();
@@ -690,7 +717,7 @@
       closeOnboardingModal();
       renderV2Chrome();
       renderTagFilters();
-      renderRecipes();
+      if (isInitialized) renderRecipes();
       return;
     }
 
@@ -713,7 +740,6 @@
       return;
     }
 
-    subscribeToV2Data();
     refreshPrivateImageUrls();
   }
 
@@ -859,7 +885,7 @@
   }
 
   function subscribeToV2Data() {
-    stopV2Subscriptions();
+    stopV2Subscriptions({ resetData: false });
     if (!currentUser || !userProfile?.onboardingComplete) return;
 
     const handleSubscriptionError = label => error => {
@@ -892,11 +918,18 @@
     v2Unsubscribers.push(
       db.collection('users').doc(currentUser.uid).collection('recipeAccess')
         .onSnapshot(snapshot => {
-          recipeAccess = new Map(snapshot.docs.map(doc => [doc.id, doc.data()]));
-          recipeAccessIds = new Set([...recipeAccess.entries()]
+          const nextRecipeAccess = new Map(snapshot.docs.map(doc => [doc.id, doc.data()]));
+          const nextRecipeAccessIds = new Set([...nextRecipeAccess.entries()]
             .filter(([, access]) => access.active !== false)
             .map(([recipeId]) => recipeId));
-          scheduleRecipeReload();
+          const accessibleIdsChanged = (
+            nextRecipeAccessIds.size !== recipeAccessIds.size ||
+            [...nextRecipeAccessIds].some(recipeId => !recipeAccessIds.has(recipeId))
+          );
+          recipeAccess = nextRecipeAccess;
+          recipeAccessIds = nextRecipeAccessIds;
+          renderRecipes();
+          if (accessibleIdsChanged) scheduleRecipeReload();
         }, handleSubscriptionError('Recipe access'))
     );
 
@@ -2200,14 +2233,18 @@
     initLanguage();
     setupLanguageToggle();
 
-    // Setup auth (non-blocking)
-    setupAuth();
+    // Start auth resolution while the static UI is prepared.
+    const initialAuthReady = setupAuth();
 
     // Setup UI immediately
     renderCategories();
     populateCategorySelect();
     setupEventListeners();
     renderImportTagSelector();
+
+    // Query the correct viewer's library once instead of racing a public load
+    // against the restored signed-in session.
+    await initialAuthReady;
 
     // Try to load from localStorage cache first for instant display
     // Note: localStorage may not be available in private browsing mode
@@ -2263,6 +2300,9 @@
       renderTagFilters();
       renderRecipes();
       isInitialized = true;
+      if (COOKBOOK_V2_ENABLED && currentUser && userProfile?.onboardingComplete) {
+        subscribeToV2Data();
+      }
     } catch (error) {
       console.error('Failed to load from Firestore:', error);
 
@@ -2318,32 +2358,47 @@
     showLoading(false);
   }
 
+  async function fetchRecipeDocumentsIndividually(recipeIds) {
+    const documents = await Promise.all((recipeIds || []).map(async recipeId => {
+      try {
+        const snapshot = await db.collection('recipes').doc(recipeId).get();
+        return snapshot.exists ? { id: snapshot.id, ...snapshot.data() } : null;
+      } catch (error) {
+        // A grant may have been revoked between reading recipeAccess and the
+        // recipe itself. Skip only that stale grant; surface real failures.
+        if (error.code !== 'permission-denied' && error.code !== 'not-found') throw error;
+        return null;
+      }
+    }));
+    return documents.filter(Boolean);
+  }
+
   async function fetchRecipeDocumentsById(recipeIds) {
     const ids = [...new Set((recipeIds || []).filter(Boolean))];
-    const documents = new Array(ids.length);
-    let cursor = 0;
+    if (!ids.length) return [];
 
-    async function worker() {
-      while (cursor < ids.length) {
-        const index = cursor;
-        cursor += 1;
-        try {
-          const snapshot = await db.collection('recipes').doc(ids[index]).get();
-          if (snapshot.exists) {
-            documents[index] = { id: snapshot.id, ...snapshot.data() };
-          }
-        } catch (error) {
-          // A grant may have been revoked between reading recipeAccess and the
-          // recipe itself. Skip only that stale grant; surface real failures.
-          if (error.code !== 'permission-denied' && error.code !== 'not-found') throw error;
-        }
-      }
+    const chunks = [];
+    for (let index = 0; index < ids.length; index += 30) {
+      chunks.push(ids.slice(index, index + 30));
     }
 
-    await Promise.all(
-      Array.from({ length: Math.min(20, ids.length) }, () => worker())
-    );
-    return documents.filter(Boolean);
+    const chunkResults = await Promise.all(chunks.map(async chunk => {
+      try {
+        const snapshot = await db.collection('recipes')
+          .where(firebase.firestore.FieldPath.documentId(), 'in', chunk)
+          .get();
+        return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      } catch (error) {
+        // A stale grant can reject a whole batched query. Retain the previous
+        // per-document fallback only for that exceptional chunk.
+        if (error.code === 'permission-denied' || error.code === 'not-found') {
+          return fetchRecipeDocumentsIndividually(chunk);
+        }
+        throw error;
+      }
+    }));
+
+    return chunkResults.flat();
   }
 
   // Load only the public catalogue plus recipes the current user may read.
@@ -2481,6 +2536,7 @@
   function showLoading(show) {
     loading.classList.toggle('active', show);
     recipesContainer.style.display = show ? 'none' : 'grid';
+    if (show) recipeCount.textContent = ui('loadingRecipes');
   }
 
   // Show offline mode warning banner
@@ -2869,6 +2925,14 @@
         ? `<span class="recipe-tag-more">+${visibleTags.length - 2}</span>`
         : '');
       const authorUsername = recipe.author?.username || '';
+      const isDemoRecipe = Boolean(
+        recipe.isDemo ||
+        recipe.ownerUid === 'levashel-demo' ||
+        authorUsername.toLowerCase() === 'levashel'
+      );
+      const demoBadgeHtml = isDemoRecipe
+        ? '<span class="recipe-demo-badge" aria-label="Demo recipe">DEMO</span>'
+        : '';
       const originHtml = COOKBOOK_V2_ENABLED && authorUsername
         ? `<div class="recipe-origin-line">מאת @${escapeHtml(authorUsername)}</div>`
         : '';
@@ -2910,8 +2974,9 @@
       }
 
       return `
-        <article class="recipe-card ${COOKBOOK_V2_ENABLED ? 'has-v2-controls' : ''}" data-id="${escapeHtml(recipe.id)}">
+        <article class="recipe-card ${COOKBOOK_V2_ENABLED ? 'has-v2-controls' : ''} ${isDemoRecipe ? 'recipe-card-demo' : ''}" data-id="${escapeHtml(recipe.id)}">
           ${imageHtml}
+          ${demoBadgeHtml}
           ${favoriteHtml}
           <button
             class="cooking-card-add"

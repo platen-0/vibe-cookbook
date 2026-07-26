@@ -44,6 +44,14 @@ test('the signed-out surface introduces the demo catalogue and onboarding action
   assert.match(html, /חמישה מתכונים להתחלה/);
 });
 
+test('demo recipes are clearly labeled on their cards', () => {
+  const source = readFileSync('app.js', 'utf8');
+  const styles = readFileSync('styles.css', 'utf8');
+  assert.match(source, /recipe\.ownerUid === 'levashel-demo'/);
+  assert.match(source, /class="recipe-demo-badge"[^>]*>DEMO<\/span>/);
+  assert.match(styles, /\.recipe-demo-badge\s*\{/);
+});
+
 test('Cookbook v2 never caches a private recipe collection device-wide', () => {
   const source = readFileSync('app.js', 'utf8');
   assert.match(source, /where\('visibility', '==', 'public'\)/);
@@ -52,4 +60,15 @@ test('Cookbook v2 never caches a private recipe collection device-wide', () => {
     source,
     /function updateRecipesCache\(\) \{\s+if \(COOKBOOK_V2_ENABLED\) return;/
   );
+});
+
+test('startup waits for auth and batches accessible recipe reads', () => {
+  const source = readFileSync('app.js', 'utf8');
+  assert.match(source, /const initialAuthReady = setupAuth\(\)/);
+  assert.match(source, /await initialAuthReady/);
+  assert.match(
+    source,
+    /where\(firebase\.firestore\.FieldPath\.documentId\(\), 'in', chunk\)/
+  );
+  assert.match(source, /index \+= 30/);
 });

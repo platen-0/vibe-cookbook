@@ -723,6 +723,29 @@ html[lang="en"] .cooking-workspace-close svg {
   transform: scale(0.98) translateY(-4px);
 }
 
+.recipe-demo-badge {
+  position: absolute;
+  z-index: 5;
+  top: 16px;
+  left: 50%;
+  min-height: 32px;
+  padding: 0 11px 0 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateX(-50%);
+  border-radius: var(--radius-full);
+  background: rgba(40, 36, 31, 0.86);
+  color: #fffdf9;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.16),
+    0 5px 18px rgba(40, 36, 31, 0.2);
+  backdrop-filter: blur(12px);
+  font: 750 0.64rem/1 var(--font-body);
+  letter-spacing: 0.16em;
+  pointer-events: none;
+}
+
 .recipe-image {
   width: 100%;
   height: 220px;
