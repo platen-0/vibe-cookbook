@@ -1406,9 +1406,17 @@
         if (policy.targetType === 'kitchen' && policy.targetId) {
           const kitchen = userKitchens.find(item => item.id === policy.targetId);
           if (!kitchen) continue;
-          await db.collection('recipes').doc(recipe.id).update({
+          const kitchenEditorUids = Object.entries(kitchen.memberRoles || {})
+            .filter(([, role]) => role === 'owner' || role === 'admin')
+            .map(([uid]) => uid);
+          const recipeUpdate = {
             sharedKitchenIds: firebase.firestore.FieldValue.arrayUnion(kitchen.id)
-          });
+          };
+          if (kitchenEditorUids.length) {
+            recipeUpdate.editorUids =
+              firebase.firestore.FieldValue.arrayUnion(...kitchenEditorUids);
+          }
+          await db.collection('recipes').doc(recipe.id).update(recipeUpdate);
           await db.collection('kitchens').doc(kitchen.id).update({
             recipeIds: firebase.firestore.FieldValue.arrayUnion(recipe.id),
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -5469,6 +5477,22 @@
     saveBtn.disabled = false;
   }
 
+  async function reconcileRecipeFromServer(recipeId) {
+    if (!recipeId || !COOKBOOK_V2_ENABLED) return null;
+    try {
+      const snapshot = await db.collection('recipes').doc(recipeId)
+        .get({ source: 'server' });
+      if (!snapshot.exists) return null;
+      const storedRecipe = { id: snapshot.id, ...snapshot.data() };
+      const index = recipes.findIndex(item => item.id === recipeId);
+      if (index !== -1) recipes[index] = storedRecipe;
+      return storedRecipe;
+    } catch (error) {
+      console.error('Recipe reconciliation failed:', error);
+      return null;
+    }
+  }
+
   // Recipe extraction function
   async function extractRecipeFromUrl() {
     if (!currentRecipeId) return;
@@ -5491,6 +5515,7 @@
 
     try {
       const result = await callImporter('/extract', {
+        recipeId: recipe.id,
         url,
         socialText: '',
         screenshots: [],
@@ -5554,7 +5579,18 @@
       }
     } catch (error) {
       console.error('Extraction failed:', error);
-      showToast(error.message || 'שגיאה בחילוץ המתכון. נסה העלאה ידנית.', 'error');
+      const permissionDenied = error.code === 'permission-denied' ||
+        /insufficient permissions/i.test(error.message || '');
+      if (permissionDenied) {
+        const storedRecipe = await reconcileRecipeFromServer(recipe.id);
+        if (storedRecipe && currentRecipeId === recipe.id) openRecipe(recipe.id);
+        showToast(
+          'החילוץ הסתיים, אבל לחשבון אין הרשאה לשמור במתכון הזה. הטקסט לא נשמר.',
+          'error'
+        );
+      } else {
+        showToast(error.message || 'שגיאה בחילוץ המתכון. נסה העלאה ידנית.', 'error');
+      }
     } finally {
       if (extractBtn) {
         extractBtn.disabled = false;

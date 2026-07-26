@@ -108,6 +108,36 @@ async function fetchDocument(relativePath) {
   return parseDocument(await googleFetch(`${DOCUMENT_ROOT}/${relativePath}`));
 }
 
+async function fetchCollection(relativePath) {
+  const documents = [];
+  let pageToken = '';
+  do {
+    const url = new URL(`${DOCUMENT_ROOT}/${relativePath}`);
+    url.searchParams.set('pageSize', '300');
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+    const payload = await googleFetch(url);
+    documents.push(...(payload.documents || []).map(document => ({
+      id: document.name.split('/').pop(),
+      ...parseDocument(document)
+    })));
+    pageToken = payload.nextPageToken || '';
+  } while (pageToken);
+  return documents;
+}
+
+async function commitWrites(label, writes, chunkSize = 400) {
+  for (let index = 0; index < writes.length; index += chunkSize) {
+    const chunk = writes.slice(index, index + chunkSize);
+    await googleFetch(`${DATABASE_ROOT}/documents:commit`, {
+      method: 'POST',
+      body: JSON.stringify({ writes: chunk })
+    });
+    console.log(
+      `${label}: committed ${Math.min(index + chunk.length, writes.length)}/${writes.length}`
+    );
+  }
+}
+
 const authUser = await fetchAuthUser(email);
 const kitchen = await fetchDocument(`kitchens/${kitchenId}`);
 if (kitchen.data.type !== 'shared') {
@@ -128,6 +158,60 @@ const currentRoleCounts = Object.values(kitchen.data.memberRoles || {}).reduce(
   }),
   {}
 );
+const [recipes, kitchens] = await Promise.all([
+  fetchCollection('recipes'),
+  fetchCollection('kitchens')
+]);
+const kitchenRecipeIds = new Set(kitchen.data.recipeIds || []);
+const kitchensById = new Map(kitchens.map(item => [item.id, item.data]));
+const sharedRecipes = recipes.filter(recipe =>
+  kitchenRecipeIds.has(recipe.id) ||
+  (recipe.data.sharedKitchenIds || []).includes(kitchenId)
+);
+
+function userShouldEditRecipe(recipe) {
+  if (recipe.data.ownerUid === uid) return true;
+  return (recipe.data.sharedKitchenIds || []).some(sharedKitchenId => {
+    const sharedKitchen = sharedKitchenId === kitchenId
+      ? { ...kitchen.data, memberRoles }
+      : kitchensById.get(sharedKitchenId);
+    return ['owner', 'admin'].includes(sharedKitchen?.memberRoles?.[uid]);
+  });
+}
+
+const now = new Date().toISOString();
+const recipeEditorWrites = sharedRecipes.flatMap(recipe => {
+  const currentEditors = recipe.data.editorUids || [];
+  const nextEditors = new Set(currentEditors);
+  if (userShouldEditRecipe(recipe)) {
+    nextEditors.add(uid);
+  } else {
+    nextEditors.delete(uid);
+  }
+  const nextEditorUids = [...nextEditors];
+  if (
+    nextEditorUids.length === currentEditors.length &&
+    nextEditorUids.every((editorUid, index) => editorUid === currentEditors[index])
+  ) {
+    return [];
+  }
+  return [{
+    update: {
+      name:
+        `projects/${PROJECT_ID}/databases/(default)/documents/recipes/${recipe.id}`,
+      fields: {
+        editorUids: encodeValue(nextEditorUids),
+        updatedAt: { timestampValue: now }
+      }
+    },
+    updateMask: {
+      fieldPaths: ['editorUids', 'updatedAt']
+    },
+    currentDocument: {
+      updateTime: recipe.updateTime
+    }
+  }];
+});
 
 const summary = {
   mode: APPLY ? 'apply' : 'dry-run',
@@ -139,7 +223,9 @@ const summary = {
   role,
   canonicalOwnerUnchanged: true,
   memberCountBefore: (kitchen.data.memberIds || []).length,
-  currentRoleCounts
+  currentRoleCounts,
+  sharedRecipeCount: sharedRecipes.length,
+  recipeEditorUpdates: recipeEditorWrites.length
 };
 
 if (!APPLY) {
@@ -169,8 +255,11 @@ await googleFetch(`${DATABASE_ROOT}/documents:commit`, {
     }]
   })
 });
+await commitWrites('Recipe editor reconciliation', recipeEditorWrites);
 
 const verified = await fetchDocument(`kitchens/${kitchenId}`);
+const verifiedRecipes = await fetchCollection('recipes');
+const verifiedById = new Map(verifiedRecipes.map(recipe => [recipe.id, recipe]));
 if (
   !verified.data.memberIds?.includes(uid) ||
   verified.data.memberRoles?.[uid] !== role ||
@@ -185,6 +274,14 @@ if (
   )
 ) {
   throw new Error('Post-update kitchen membership verification failed');
+}
+for (const recipe of sharedRecipes) {
+  const verifiedRecipe = verifiedById.get(recipe.id);
+  const expectedEditor = userShouldEditRecipe(recipe);
+  const isEditor = (verifiedRecipe?.data.editorUids || []).includes(uid);
+  if (expectedEditor !== isEditor) {
+    throw new Error(`Recipe editor reconciliation failed for ${recipe.id}`);
+  }
 }
 
 console.log(JSON.stringify({

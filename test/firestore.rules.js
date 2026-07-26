@@ -188,6 +188,35 @@ test('automation cannot replace protected human recipe text', async () => {
   }));
 });
 
+test('a materialized shared-kitchen editor can save the first generated recipe text', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'recipes/extraction_target'), {
+      name: 'Extraction target',
+      ownerUid: 'tal',
+      homeKitchenId: 'personal_tal',
+      visibility: 'private',
+      sharedKitchenIds: ['schreiber'],
+      editorUids: ['tal', 'admin'],
+      tags: ['tal', 'kid-friendly'],
+      content: {
+        url: 'https://example.com/recipe'
+      }
+    });
+  });
+
+  await assertSucceeds(updateDoc(
+    doc(authed('admin'), 'recipes/extraction_target'),
+    {
+      'content.text': 'מרכיבים\\n1 כוס מים\\n\\nהכנה\\nמערבבים.',
+      'content.textMeta': {
+        source: 'generated',
+        protected: false,
+        pipelineVersion: 'extraction-v1'
+      }
+    }
+  ));
+});
+
 test('recipe revisions are append-only and restricted to editors', async () => {
   const ownerRevision = doc(authed('tal'), 'recipes/shared_recipe/revisions/rev_owner');
   await assertSucceeds(setDoc(ownerRevision, {

@@ -21,6 +21,28 @@ test('rerunning extraction stores a candidate instead of replacing saved text', 
   assert.match(source, /הטקסט השמור לא השתנה/);
 });
 
+test('extraction updates local UI only after Firestore confirms the write', () => {
+  const source = readFileSync('app.js', 'utf8');
+  const extractionStart = source.indexOf('async function extractRecipeFromUrl()');
+  const extractionEnd = source.indexOf('// Extract recipe content from parsed HTML', extractionStart);
+  const extraction = source.slice(extractionStart, extractionEnd);
+  const transaction = extraction.indexOf('const outcome = await db.runTransaction');
+  const localMutation = extraction.indexOf('recipe.content.text = recipeText');
+
+  assert.ok(transaction >= 0);
+  assert.ok(localMutation > transaction);
+  assert.match(extraction, /await reconcileRecipeFromServer\(recipe\.id\)/);
+  assert.match(extraction, /הטקסט לא נשמר/);
+});
+
+test('kitchen role repair reconciles recipe editors without touching recipe tags', () => {
+  const source = readFileSync('scripts/set-kitchen-member-role.mjs', 'utf8');
+  assert.match(source, /function userShouldEditRecipe/);
+  assert.match(source, /Recipe editor reconciliation/);
+  assert.match(source, /fieldPaths: \['editorUids', 'updatedAt'\]/);
+  assert.doesNotMatch(source, /fieldPaths: \['editorUids', 'updatedAt', 'tags'\]/);
+});
+
 test('translation precedence is personal, canonical human, then generated', () => {
   const source = readFileSync('app.js', 'utf8');
   const html = readFileSync('index.html', 'utf8');
