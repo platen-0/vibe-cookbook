@@ -339,7 +339,7 @@ test('shared kitchen names can be looked up exactly without exposing membership'
   ));
 });
 
-test('access requests can only be resolved by their kitchen recipients', async () => {
+test('admin approval directly and atomically grants kitchen membership and recipe access', async () => {
   const request = {
     targetKind: 'kitchen',
     targetKitchenId: 'schreiber',
@@ -364,15 +364,100 @@ test('access requests can only be resolved by their kitchen recipients', async (
     doc(authed('member'), 'kitchenAccessRequests/valid-request'),
     { status: 'approved', resolverUid: 'member' }
   ));
-  await assertSucceeds(updateDoc(
-    doc(authed('admin'), 'kitchenAccessRequests/valid-request'),
+
+  const adminDb = authed('admin');
+  const approval = writeBatch(adminDb);
+  approval.update(doc(adminDb, 'kitchens/schreiber'), {
+    memberIds: arrayUnion('outsider'),
+    'memberRoles.outsider': 'member'
+  });
+  approval.update(doc(adminDb, 'kitchenAccessRequests/valid-request'), {
+    status: 'approved',
+    resolverUid: 'admin',
+    resolvedKitchenId: 'schreiber'
+  });
+  approval.set(doc(adminDb, 'users/outsider/recipeAccess/shared_recipe'), {
+    recipeId: 'shared_recipe',
+    active: true,
+    allowCopy: true,
+    grantKind: 'kitchen',
+    kitchenId: 'schreiber',
+    sourceAccessRequestId: 'valid-request',
+    grantedByUid: 'admin'
+  });
+  await assertSucceeds(approval.commit());
+  await assertSucceeds(getDoc(doc(authed('outsider'), 'recipes/shared_recipe')));
+
+  await assertFails(setDoc(
+    doc(authed('outsider'), 'users/outsider/recipeAccess/private_recipe'),
     {
-      status: 'approved',
-      resolverUid: 'admin',
-      resolvedKitchenId: 'schreiber',
-      invitationId: 'approved-invite'
+      recipeId: 'private_recipe',
+      active: true,
+      grantKind: 'kitchen',
+      kitchenId: 'schreiber',
+      sourceAccessRequestId: 'valid-request',
+      grantedByUid: 'outsider'
     }
   ));
+  await assertFails(setDoc(
+    doc(adminDb, 'users/outsider/recipeAccess/private_recipe'),
+    {
+      recipeId: 'private_recipe',
+      active: true,
+      grantKind: 'kitchen',
+      kitchenId: 'schreiber',
+      sourceAccessRequestId: 'valid-request',
+      grantedByUid: 'admin'
+    }
+  ));
+});
+
+test('direct approval materializes access for a full kitchen in one batch', async () => {
+  const recipeIds = Array.from({ length: 30 }, (_, index) => `bulk_recipe_${index}`);
+  await environment.withSecurityRulesDisabled(async context => {
+    await updateDoc(doc(context.firestore(), 'kitchens/schreiber'), {
+      recipeIds
+    });
+  });
+
+  const request = {
+    targetKind: 'user',
+    targetUid: 'admin',
+    recipientUids: ['admin'],
+    requesterUid: 'outsider',
+    requesterName: 'Outsider',
+    requesterUsername: 'outsider',
+    requesterEmail: 'outsider@example.com',
+    status: 'pending'
+  };
+  await assertSucceeds(setDoc(
+    doc(authed('outsider'), 'kitchenAccessRequests/bulk-request'),
+    request
+  ));
+
+  const adminDb = authed('admin');
+  const approval = writeBatch(adminDb);
+  approval.update(doc(adminDb, 'kitchens/schreiber'), {
+    memberIds: arrayUnion('outsider'),
+    'memberRoles.outsider': 'member'
+  });
+  approval.update(doc(adminDb, 'kitchenAccessRequests/bulk-request'), {
+    status: 'approved',
+    resolverUid: 'admin',
+    resolvedKitchenId: 'schreiber'
+  });
+  recipeIds.forEach(recipeId => {
+    approval.set(doc(adminDb, `users/outsider/recipeAccess/${recipeId}`), {
+      recipeId,
+      active: true,
+      allowCopy: true,
+      grantKind: 'kitchen',
+      kitchenId: 'schreiber',
+      sourceAccessRequestId: 'bulk-request',
+      grantedByUid: 'admin'
+    });
+  });
+  await assertSucceeds(approval.commit());
 });
 
 test('an invited user can atomically join with exactly the invited role', async () => {

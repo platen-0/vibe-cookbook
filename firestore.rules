@@ -194,8 +194,37 @@ service cloud.firestore {
                  kitchenId in recipe.sharedKitchenIds;
         }
 
+        function kitchenAdminIsGrantingApprovedRequest() {
+          let kitchenId = request.resource.data.get('kitchenId', '');
+          let accessRequestId =
+            request.resource.data.get('sourceAccessRequestId', '');
+          let kitchen = getAfter(
+            /databases/$(database)/documents/kitchens/$(kitchenId)
+          ).data;
+          let accessRequest = getAfter(
+            /databases/$(database)/documents/kitchenAccessRequests/$(accessRequestId)
+          ).data;
+          return request.resource.data.get('grantKind', '') == 'kitchen' &&
+                 kitchenId != '' &&
+                 accessRequestId != '' &&
+                 signedIn() &&
+                 isKitchenAdmin(kitchenId) &&
+                 request.resource.data.recipeId == recipeId &&
+                 request.resource.data.grantKind == 'kitchen' &&
+                 request.resource.data.active == true &&
+                 request.resource.data.grantedByUid == request.auth.uid &&
+                 accessRequest.status == 'approved' &&
+                 accessRequest.resolverUid == request.auth.uid &&
+                 accessRequest.requesterUid == userId &&
+                 accessRequest.resolvedKitchenId == kitchenId &&
+                 request.auth.uid in accessRequest.recipientUids &&
+                 userId in kitchen.memberIds &&
+                 recipeId in kitchen.recipeIds;
+        }
+
         allow read: if signedIn() && request.auth.uid == userId;
-        allow create, update: if recipeOwnerIsGranting() ||
+        allow create, update: if kitchenAdminIsGrantingApprovedRequest() ||
+                                 recipeOwnerIsGranting() ||
                                  targetIsClaimingPolicy() ||
                                  targetIsClaimingKitchenAccess();
         allow delete: if recipeOwnerIsGranting() ||

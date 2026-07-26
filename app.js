@@ -1432,37 +1432,50 @@
     }
 
     try {
-      const invitationRef = db.collection('invitations').doc();
       const requestRef = db.collection('kitchenAccessRequests').doc(requestId);
+      const kitchenRef = db.collection('kitchens').doc(kitchen.id);
+      const recipeIds = [...new Set(kitchen.recipeIds || [])];
+      if (recipeIds.length > 498) throw new Error('kitchen-too-large');
       const batch = db.batch();
-      batch.set(invitationRef, {
-        type: 'kitchen',
-        title: `הזמנה למטבח ${kitchen.name}`,
-        kitchenId: kitchen.id,
-        kitchenName: kitchen.name,
-        role: 'member',
-        targetUid: accessRequest.requesterUid,
-        targetEmail: accessRequest.requesterEmail || null,
-        targetUsername: accessRequest.requesterUsername || null,
-        inviterUid: currentUser.uid,
-        inviterUsername: userProfile.username,
-        sourceAccessRequestId: requestId,
-        status: 'pending',
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      batch.update(kitchenRef, {
+        memberIds: firebase.firestore.FieldValue.arrayUnion(accessRequest.requesterUid),
+        [`memberRoles.${accessRequest.requesterUid}`]: 'member',
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       });
       batch.update(requestRef, {
         status: 'approved',
         resolverUid: currentUser.uid,
         resolvedKitchenId: kitchen.id,
-        invitationId: invitationRef.id,
         resolvedAt: firebase.firestore.FieldValue.serverTimestamp(),
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       });
+      recipeIds.forEach(recipeId => {
+        batch.set(
+          db.collection('users').doc(accessRequest.requesterUid)
+            .collection('recipeAccess').doc(recipeId),
+          {
+            recipeId,
+            active: true,
+            allowCopy: true,
+            grantKind: 'kitchen',
+            kitchenId: kitchen.id,
+            sourceAccessRequestId: requestId,
+            grantedByUid: currentUser.uid,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          },
+          { merge: true }
+        );
+      });
       await batch.commit();
-      showToast('הבקשה אושרה וההזמנה נשלחה', 'success');
+      showToast('הבקשה אושרה והגישה למטבח נפתחה', 'success');
     } catch (error) {
       console.error('Kitchen access approval failed:', error);
-      showToast('לא הצלחנו לאשר את הבקשה', 'error');
+      showToast(
+        error.message === 'kitchen-too-large'
+          ? 'המטבח גדול מדי לאישור ישיר כרגע'
+          : 'לא הצלחנו לאשר את הבקשה',
+        'error'
+      );
     }
   }
 
