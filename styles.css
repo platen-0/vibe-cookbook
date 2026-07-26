@@ -6335,3 +6335,218 @@ html.dark-mode .editorial-check {
     display: none !important;
   }
 }
+
+/* Recipe modal controls — one quiet, editorial action language */
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: 14px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  box-shadow: 0 2px 9px rgba(40, 36, 31, 0.05);
+  cursor: pointer;
+  transition-property: color, background-color, border-color, box-shadow, scale;
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.modal-icon-action svg,
+.delete-dialog-mark svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.modal-icon-action:hover {
+  color: var(--terracotta-dark);
+  background: var(--card-bg);
+  border-color: color-mix(in srgb, var(--terracotta) 28%, var(--border-color));
+  box-shadow: 0 5px 14px rgba(40, 36, 31, 0.09);
+  transform: none;
+}
+
+.modal-icon-action:active {
+  scale: 0.94;
+}
+
+.modal-delete {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: inherit;
+}
+
+.modal-delete:hover {
+  background: color-mix(in srgb, #b85748 7%, var(--card-bg));
+  color: #a8493d;
+  transform: none;
+}
+
+.modal-icon-action:focus-visible,
+.recipe-modal-action:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--terracotta) 28%, transparent);
+  outline-offset: 3px;
+}
+
+.recipe-action-buttons {
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+  margin-bottom: 24px;
+}
+
+.recipe-modal-action,
+.recipe-action-buttons .recipe-modal-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  margin: 0;
+  padding: 10px 16px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: 14px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  box-shadow: 0 2px 9px rgba(40, 36, 31, 0.045);
+  font: 650 0.84rem/1 var(--font-body);
+  cursor: pointer;
+  transition-property: color, background-color, border-color, box-shadow, scale;
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.recipe-modal-action svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.recipe-modal-action:hover,
+.recipe-action-buttons .recipe-modal-action:hover {
+  color: var(--terracotta-dark);
+  background: var(--card-bg);
+  border-color: color-mix(in srgb, var(--terracotta) 25%, var(--border-color));
+  box-shadow: 0 5px 14px rgba(40, 36, 31, 0.08);
+  transform: none;
+}
+
+.recipe-modal-action:active {
+  scale: 0.97;
+}
+
+.recipe-modal-action.modal-cooking-btn {
+  border-color: transparent;
+  background: var(--espresso);
+  color: #fffdf9;
+  box-shadow: var(--shadow-control);
+}
+
+.recipe-modal-action.modal-cooking-btn:hover {
+  border-color: transparent;
+  background: var(--charcoal);
+  color: #fffdf9;
+  box-shadow: var(--shadow-control-hover);
+}
+
+.recipe-modal-action.modal-cooking-btn.selected {
+  background: var(--olive);
+  color: #fffdf9;
+}
+
+.recipe-modal-action:disabled {
+  opacity: 0.55;
+  cursor: wait;
+  box-shadow: none;
+}
+
+.delete-dialog-mark {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 16px;
+  border: 1px solid color-mix(in srgb, #b85748 18%, var(--border-color));
+  border-radius: 16px;
+  background: color-mix(in srgb, #b85748 6%, var(--card-bg));
+  color: #a8493d;
+}
+
+.delete-dialog-note {
+  max-width: 330px;
+  margin: -12px auto 24px;
+  color: var(--text-light);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+html.dark-mode .modal-icon-action,
+html.dark-mode .recipe-modal-action,
+html.dark-mode .recipe-action-buttons .recipe-modal-action {
+  border-color: rgba(255, 255, 255, 0.09);
+  background: color-mix(in srgb, var(--card-bg) 86%, white 3%);
+  color: var(--text-secondary);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16);
+}
+
+html.dark-mode .modal-icon-action:hover,
+html.dark-mode .recipe-modal-action:hover,
+html.dark-mode .recipe-action-buttons .recipe-modal-action:hover {
+  border-color: color-mix(in srgb, var(--terracotta) 35%, transparent);
+  background: color-mix(in srgb, var(--card-bg) 92%, white 5%);
+  color: var(--cream);
+}
+
+html.dark-mode .recipe-modal-action.modal-cooking-btn {
+  border-color: transparent;
+  background: #f3eee4;
+  color: #20241f;
+}
+
+html.dark-mode .recipe-modal-action.modal-cooking-btn.selected {
+  background: var(--olive);
+  color: #151914;
+}
+
+@media (max-width: 600px) {
+  .modal-icon-action {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+  }
+
+  .modal-icon-action svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .recipe-action-buttons {
+    gap: 7px;
+  }
+
+  .recipe-modal-action,
+  .recipe-action-buttons .recipe-modal-action {
+    min-height: 42px;
+    padding: 9px 13px;
+    font-size: 0.78rem;
+  }
+}

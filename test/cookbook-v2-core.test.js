@@ -130,6 +130,7 @@ test('copies become private user-owned recipes and retain provenance', () => {
     id: 'source',
     ownerUid: 'tal',
     name: 'Soup',
+    isDemo: true,
     tags: ['quick'],
     author: { username: 'tal' },
     sharedKitchenIds: ['schreiber'],
@@ -144,6 +145,7 @@ test('copies become private user-owned recipes and retain provenance', () => {
   assert.equal(copy.visibility, 'private');
   assert.deepEqual(copy.sharedKitchenIds, []);
   assert.deepEqual(copy.tags, ['quick']);
+  assert.equal(copy.isDemo, undefined);
   assert.equal(copy.provenance.sourceRecipeId, 'source');
   assert.equal(copy.provenance.sourceUsername, 'tal');
 });

@@ -218,6 +218,7 @@
       }
     };
     delete copy._firestore;
+    delete copy.isDemo;
     return copy;
   }
 

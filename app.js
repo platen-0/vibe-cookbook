@@ -75,6 +75,7 @@
   let favoriteIds = new Set();
   let recipeAccessIds = new Set();
   let recipeAccess = new Map();
+  let hiddenDemoRecipeIds = new Set();
   let pendingInvitations = [];
   let privateImageUrls = new Map();
   let privateImageRefreshKey = '';
@@ -116,6 +117,7 @@
   let cookingSwipeStart = null;
   let cookingReturnFocus = null;
   let hasSeededCookingPreview = false;
+  let pendingSharedRecipeId = URL_PARAMS.get('recipe') || '';
 
   // Main category hierarchy
   const MAIN_CATEGORIES = [
@@ -337,6 +339,7 @@
   const modalBody = document.getElementById('modal-body');
   const modalClose = document.getElementById('modal-close');
   const modalDelete = document.getElementById('modal-delete');
+  const modalShare = document.getElementById('modal-share');
   const addModal = document.getElementById('add-modal');
   const addModalClose = document.getElementById('add-modal-close');
   const addRecipeBtn = document.getElementById('add-recipe-btn');
@@ -671,6 +674,7 @@
     recipeAccessIds = new Set();
     recipeAccess = new Map();
     pendingInvitations = [];
+    hiddenDemoRecipeIds = new Set();
     privateImageUrls = new Map();
     privateImageRefreshKey = '';
   }
@@ -699,6 +703,15 @@
     return COOKBOOK_V2_ENABLED && CookbookV2Core.canCopyRecipe(recipe, getViewerContext());
   }
 
+  function isDemoRecipe(recipe) {
+    const authorUsername = String(recipe?.author?.username || '').toLowerCase();
+    return Boolean(
+      recipe?.isDemo ||
+      recipe?.ownerUid === 'levashel-demo' ||
+      authorUsername === 'levashel'
+    );
+  }
+
   async function sha256Text(value) {
     const bytes = new TextEncoder().encode(String(value || '').trim().toLowerCase());
     const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -724,6 +737,7 @@
     try {
       const snapshot = await db.collection('users').doc(user.uid).get();
       userProfile = snapshot.exists ? snapshot.data() : null;
+      hiddenDemoRecipeIds = new Set(userProfile?.hiddenDemoRecipeIds || []);
     } catch (error) {
       console.error('Failed to load v2 profile:', error);
       showToast('לא הצלחנו לטעון את האזור האישי', 'error');
@@ -2796,6 +2810,14 @@
   function getFilteredRecipes() {
     return recipes.filter(recipe => {
       if (
+        currentUser &&
+        isDemoRecipe(recipe) &&
+        hiddenDemoRecipeIds.has(recipe.id)
+      ) {
+        return false;
+      }
+
+      if (
         COOKBOOK_V2_ENABLED &&
         !CookbookV2Core.canViewRecipe(recipe, getViewerContext())
       ) {
@@ -2925,12 +2947,8 @@
         ? `<span class="recipe-tag-more">+${visibleTags.length - 2}</span>`
         : '');
       const authorUsername = recipe.author?.username || '';
-      const isDemoRecipe = Boolean(
-        recipe.isDemo ||
-        recipe.ownerUid === 'levashel-demo' ||
-        authorUsername.toLowerCase() === 'levashel'
-      );
-      const demoBadgeHtml = isDemoRecipe
+      const demoRecipe = isDemoRecipe(recipe);
+      const demoBadgeHtml = demoRecipe
         ? '<span class="recipe-demo-badge" aria-label="Demo recipe">DEMO</span>'
         : '';
       const originHtml = COOKBOOK_V2_ENABLED && authorUsername
@@ -2974,7 +2992,7 @@
       }
 
       return `
-        <article class="recipe-card ${COOKBOOK_V2_ENABLED ? 'has-v2-controls' : ''} ${isDemoRecipe ? 'recipe-card-demo' : ''}" data-id="${escapeHtml(recipe.id)}">
+        <article class="recipe-card ${COOKBOOK_V2_ENABLED ? 'has-v2-controls' : ''} ${demoRecipe ? 'recipe-card-demo' : ''}" data-id="${escapeHtml(recipe.id)}">
           ${imageHtml}
           ${demoBadgeHtml}
           ${favoriteHtml}
@@ -3006,6 +3024,15 @@
       `;
     }).join('');
     updateCookingUI();
+    openPendingSharedRecipe();
+  }
+
+  function openPendingSharedRecipe() {
+    if (!pendingSharedRecipeId || currentRecipeId) return;
+    const recipe = recipes.find(item => item.id === pendingSharedRecipeId);
+    if (!recipe || hiddenDemoRecipeIds.has(recipe.id)) return;
+    pendingSharedRecipeId = '';
+    requestAnimationFrame(() => openRecipe(recipe.id));
   }
 
   // Open recipe modal
@@ -3020,45 +3047,47 @@
 
     let contentHtml = '';
 
-    const privateImageKeys = recipe.content?.privateImageKeys || [];
-    const privateImages = privateImageKeys
-      .map(key => privateImageUrls.get(key))
-      .filter(Boolean);
-    if (privateImages.length === 1) {
-      contentHtml += `<img src="${escapeHtml(privateImages[0])}" alt="${escapeHtml(recipe.name || '')}" class="modal-image">`;
-    } else if (privateImages.length > 1) {
-      contentHtml += `
-        <div class="images-gallery">
-          ${privateImages.map(image => `<img src="${escapeHtml(image)}" alt="${escapeHtml(recipe.name || '')}">`).join('')}
-        </div>
-      `;
-    }
-
-    // Uploaded Images (from Firebase Storage)
-    if (recipe.content?.uploadedImages && recipe.content.uploadedImages.length > 0) {
-      const images = recipe.content.uploadedImages;
-      if (images.length === 1) {
-        contentHtml += `<img src="${images[0]}" alt="${recipe.name}" class="modal-image">`;
-      } else {
+    // Video cards keep their extracted thumbnail in the grid, but lead with
+    // the playable embed when opened so the still image is not repeated.
+    if (recipe.type !== 'video') {
+      const privateImageKeys = recipe.content?.privateImageKeys || [];
+      const privateImages = privateImageKeys
+        .map(key => privateImageUrls.get(key))
+        .filter(Boolean);
+      if (privateImages.length === 1) {
+        contentHtml += `<img src="${escapeHtml(privateImages[0])}" alt="${escapeHtml(recipe.name || '')}" class="modal-image">`;
+      } else if (privateImages.length > 1) {
         contentHtml += `
           <div class="images-gallery">
-            ${images.map(img => `<img src="${img}" alt="${recipe.name}">`).join('')}
+            ${privateImages.map(image => `<img src="${escapeHtml(image)}" alt="${escapeHtml(recipe.name || '')}">`).join('')}
           </div>
         `;
       }
-    }
 
-    // Local Images
-    if (recipe.content?.images && recipe.content.images.length > 0) {
-      const images = recipe.content.images.filter(img => !img.endsWith('.docx'));
-      if (images.length === 1) {
-        contentHtml += `<img src="images/${images[0]}" alt="${recipe.name}" class="modal-image">`;
-      } else if (images.length > 1) {
-        contentHtml += `
-          <div class="images-gallery">
-            ${images.map(img => `<img src="images/${img}" alt="${recipe.name}">`).join('')}
-          </div>
-        `;
+      if (recipe.content?.uploadedImages && recipe.content.uploadedImages.length > 0) {
+        const images = recipe.content.uploadedImages;
+        if (images.length === 1) {
+          contentHtml += `<img src="${escapeHtml(images[0])}" alt="${escapeHtml(recipe.name || '')}" class="modal-image">`;
+        } else {
+          contentHtml += `
+            <div class="images-gallery">
+              ${images.map(img => `<img src="${escapeHtml(img)}" alt="${escapeHtml(recipe.name || '')}">`).join('')}
+            </div>
+          `;
+        }
+      }
+
+      if (recipe.content?.images && recipe.content.images.length > 0) {
+        const images = recipe.content.images.filter(img => !img.endsWith('.docx'));
+        if (images.length === 1) {
+          contentHtml += `<img src="images/${escapeHtml(images[0])}" alt="${escapeHtml(recipe.name || '')}" class="modal-image">`;
+        } else if (images.length > 1) {
+          contentHtml += `
+            <div class="images-gallery">
+              ${images.map(img => `<img src="images/${escapeHtml(img)}" alt="${escapeHtml(recipe.name || '')}">`).join('')}
+            </div>
+          `;
+        }
       }
     }
 
@@ -3085,8 +3114,8 @@
           </div>
           <p id="recipe-text-content" dir="auto">${escapeHtml(recipeText)}</p>
           <div class="recipe-translation-status" id="recipe-translation-status" aria-live="polite"></div>
-          ${recipeCanEdit ? `<button class="add-transcription-btn" data-action="edit-transcription" style="margin-top: 12px; background: #64748b;">
-            ✏️ ערוך טקסט
+          ${recipeCanEdit ? `<button class="recipe-modal-action add-transcription-btn" data-action="edit-transcription" style="margin-top: 12px;">
+            עריכת טקסט
           </button>` : ''}
         </div>
       `;
@@ -3097,7 +3126,7 @@
 
     contentHtml += `
       <button
-        class="modal-cooking-btn"
+        class="recipe-modal-action modal-cooking-btn"
         data-action="toggle-cooking"
         data-recipe-id="${escapeHtml(recipe.id)}"
         aria-pressed="false"
@@ -3123,14 +3152,14 @@
       const extractionLabel = `${extractionAction} ${extractionSource}`;
       contentHtml += `
         <button
-          class="extract-recipe-btn"
+          class="recipe-modal-action extract-recipe-btn"
           data-action="extract-recipe"
           data-idle-label="${extractionLabel}"
           title="${recipe.type === 'video'
             ? 'בדיקת תיאור הפוסט והתגובה הראשונה של היוצר'
             : 'בדיקת עמוד המקור המלא'}"
         >
-          <span aria-hidden="true">↻</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 8a7.5 7.5 0 1 0 .45 7.2M19 8V3.5M19 8h-4.5"/></svg>
           ${extractionLabel}
         </button>
       `;
@@ -3140,8 +3169,8 @@
     if (!recipeText) {
       if (recipeCanEdit) {
         contentHtml += `
-          <button class="add-transcription-btn" data-action="add-transcription">
-            📝 הוסף טקסט מתכון
+          <button class="recipe-modal-action add-transcription-btn" data-action="add-transcription">
+            הוספת טקסט מתכון
           </button>
         `;
       }
@@ -3150,14 +3179,14 @@
     // Edit tags button (only if can edit)
     if (recipeCanEdit) {
       contentHtml += `
-        <button class="add-image-btn" data-action="edit-image">
-          ▧ ${(recipe.content?.uploadedImages?.length || recipe.content?.privateImageKeys?.length) ? 'החלף תמונה' : 'הוסף תמונה'}
+        <button class="recipe-modal-action add-image-btn" data-action="edit-image">
+          ${(recipe.content?.uploadedImages?.length || recipe.content?.privateImageKeys?.length) ? 'החלפת תמונה' : 'הוספת תמונה'}
         </button>
-        <button class="edit-tags-btn" data-action="edit-tags">
-          🏷️ ערוך תגיות
+        <button class="recipe-modal-action edit-tags-btn" data-action="edit-tags">
+          עריכת תגיות
         </button>
-        <button class="edit-category-btn" data-action="edit-category">
-          ✏️ ערוך פרטים
+        <button class="recipe-modal-action edit-category-btn" data-action="edit-category">
+          עריכת פרטים
         </button>
       `;
     }
@@ -3241,7 +3270,12 @@
       ${contentHtml}
     `;
 
-    modalDelete.classList.toggle('hidden', !recipeCanEdit);
+    const canRemoveDemo = Boolean(currentUser && isDemoRecipe(recipe));
+    modalDelete.classList.toggle('hidden', !recipeCanEdit && !canRemoveDemo);
+    modalDelete.title = canRemoveDemo && !recipeCanEdit
+      ? 'הסרה מהמתכונים שלי'
+      : 'מחיקת המתכון';
+    modalDelete.setAttribute('aria-label', modalDelete.title);
     modal.classList.add('active');
     document.body.style.overflow = 'hidden';
     updateCookingControls();
@@ -3489,6 +3523,33 @@
     currentRecipeId = null;
   }
 
+  async function shareCurrentRecipe() {
+    const recipe = recipes.find(item => item.id === currentRecipeId);
+    if (!recipe) return;
+
+    const shareUrl = new URL(window.location.origin + window.location.pathname);
+    shareUrl.searchParams.set('recipe', recipe.id);
+    const shareData = {
+      title: recipe.name || 'Levashel',
+      text: `${recipe.name || 'מתכון'} · Levashel`,
+      url: shareUrl.toString()
+    };
+
+    try {
+      if (navigator.share) {
+        await navigator.share(shareData);
+        return;
+      }
+      await navigator.clipboard.writeText(shareData.url);
+      showToast('הקישור למתכון הועתק', 'success');
+    } catch (error) {
+      if (error?.name !== 'AbortError') {
+        console.error('Recipe share failed:', error);
+        showToast('לא הצלחנו לשתף את המתכון', 'error');
+      }
+    }
+  }
+
   // Close add modal
   function closeAddModal() {
     addModal.classList.remove('active');
@@ -3512,21 +3573,57 @@
   // Delete recipe
   async function deleteRecipe(id) {
     const recipe = recipes.find(r => r.id === id);
-    if (!recipe || !canEditRecipeNow(recipe)) {
+    const canRemoveDemo = Boolean(currentUser && isDemoRecipe(recipe));
+    if (!recipe || (!canEditRecipeNow(recipe) && !canRemoveDemo)) {
       showToast('אין לך הרשאה למחוק מתכונים. התחבר עם חשבון מורשה.', 'error');
       return;
     }
 
     document.getElementById('delete-recipe-name').textContent = recipe.name;
+    const title = document.getElementById('delete-dialog-title');
+    const note = document.getElementById('delete-dialog-note');
+    if (canRemoveDemo && !canEditRecipeNow(recipe)) {
+      title.textContent = 'להסיר את מתכון ההדגמה?';
+      note.textContent = 'המתכון יוסר רק מהתצוגה שלך. עותק ההדגמה המשותף לא יימחק.';
+      note.hidden = false;
+      confirmDeleteBtn.textContent = 'הסרה';
+    } else {
+      title.textContent = 'למחוק את המתכון?';
+      note.textContent = '';
+      note.hidden = true;
+      confirmDeleteBtn.textContent = 'מחק';
+    }
     deleteModal.classList.add('active');
   }
 
   async function confirmDelete() {
     if (!currentRecipeId) return;
     const recipe = recipes.find(item => item.id === currentRecipeId);
-    if (!recipe || !canEditRecipeNow(recipe)) return;
+    const removeDemo = Boolean(
+      currentUser &&
+      isDemoRecipe(recipe) &&
+      !canEditRecipeNow(recipe)
+    );
+    if (!recipe || (!canEditRecipeNow(recipe) && !removeDemo)) return;
 
     try {
+      if (removeDemo) {
+        await db.collection('users').doc(currentUser.uid).set({
+          hiddenDemoRecipeIds: firebase.firestore.FieldValue.arrayUnion(currentRecipeId),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        hiddenDemoRecipeIds.add(currentRecipeId);
+        userProfile = {
+          ...(userProfile || {}),
+          hiddenDemoRecipeIds: [...hiddenDemoRecipeIds]
+        };
+        renderRecipes();
+        showToast('מתכון ההדגמה הוסר מהתצוגה שלך', 'success');
+        closeModal();
+        deleteModal.classList.remove('active');
+        return;
+      }
+
       await db.collection('recipes').doc(currentRecipeId).delete();
       recipes = recipes.filter(r => r.id !== currentRecipeId);
       updateRecipesCache(); // Sync cache with Firestore
@@ -4407,6 +4504,7 @@
     modalDelete.addEventListener('click', () => {
       if (currentRecipeId) deleteRecipe(currentRecipeId);
     });
+    modalShare.addEventListener('click', shareCurrentRecipe);
 
     cancelDeleteBtn.addEventListener('click', () => {
       deleteModal.classList.remove('active');
@@ -5035,7 +5133,7 @@
       if (extractBtn) {
         extractBtn.disabled = false;
         extractBtn.removeAttribute('aria-busy');
-        extractBtn.innerHTML = `<span aria-hidden="true">↻</span> ${idleLabel}`;
+        extractBtn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 8a7.5 7.5 0 1 0 .45 7.2M19 8V3.5M19 8h-4.5"/></svg> ${idleLabel}`;
       }
     }
   }

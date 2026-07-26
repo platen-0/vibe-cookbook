@@ -47,9 +47,28 @@ test('the signed-out surface introduces the demo catalogue and onboarding action
 test('demo recipes are clearly labeled on their cards', () => {
   const source = readFileSync('app.js', 'utf8');
   const styles = readFileSync('styles.css', 'utf8');
-  assert.match(source, /recipe\.ownerUid === 'levashel-demo'/);
+  assert.match(source, /recipe\?\.ownerUid === 'levashel-demo'/);
   assert.match(source, /class="recipe-demo-badge"[^>]*>DEMO<\/span>/);
   assert.match(styles, /\.recipe-demo-badge\s*\{/);
+});
+
+test('signed-in users can remove demos personally and copy them as normal recipes', () => {
+  const source = readFileSync('app.js', 'utf8');
+  const core = readFileSync('cookbook-v2-core.js', 'utf8');
+  assert.match(source, /hiddenDemoRecipeIds:\s*firebase\.firestore\.FieldValue\.arrayUnion/);
+  assert.match(source, /hiddenDemoRecipeIds\.has\(recipe\.id\)/);
+  assert.match(core, /delete copy\.isDemo/);
+});
+
+test('recipe modal has modern share and delete actions and video-first opening', () => {
+  const html = readFileSync('index.html', 'utf8');
+  const source = readFileSync('app.js', 'utf8');
+  assert.match(html, /id="modal-share"/);
+  assert.match(html, /M12 15V3/);
+  assert.match(html, /id="modal-delete"[\s\S]*?<svg/);
+  assert.match(source, /if \(recipe\.type !== 'video'\)/);
+  assert.match(source, /navigator\.share/);
+  assert.match(source, /shareUrl\.searchParams\.set\('recipe', recipe\.id\)/);
 });
 
 test('Cookbook v2 never caches a private recipe collection device-wide', () => {
