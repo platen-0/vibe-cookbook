@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-const expectedTitle = 'Levashel.com | Help in the kitchen';
+const expectedTitle = 'Levashel.com | Save, share, and cook your recipes';
 const expectedDescription =
-  'Add your recipes, share with friends, and have assistance live while cooking.';
+  'Save recipes from links, photos, and notes, share them with family and friends, and follow several recipes while you cook.';
 
 test('publishes a complete large-image social sharing card', () => {
   const html = readFileSync('index.html', 'utf8');
@@ -20,7 +20,7 @@ test('publishes a complete large-image social sharing card', () => {
   );
   assert.match(
     html,
-    /<meta property="og:image" content="https:\/\/levashel\.com\/og-card\.png">/
+    /<meta property="og:image" content="https:\/\/levashel\.com\/og-card\.png\?v=2">/
   );
   assert.match(
     html,
