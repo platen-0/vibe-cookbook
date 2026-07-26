@@ -14,6 +14,13 @@
 
   // Initialize Firebase
   firebase.initializeApp(firebaseConfig);
+  const appCheck = firebase.appCheck();
+  appCheck.activate(
+    new firebase.appCheck.ReCaptchaEnterpriseProvider(
+      '6LcYkmYtAAAAADat0i_9Uy4zvLy7cuCiTMkN399r'
+    ),
+    true
+  );
   const db = firebase.firestore();
 
   // Fix for Safari/iOS PWA timeout issue
