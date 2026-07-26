@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1200, initial-scale=1">
+  <title>Levashel.com — Open Graph card</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap');
+
+    :root {
+      --cream: #f7f4ed;
+      --linen: #fffdf9;
+      --cream-deep: #eee8dd;
+      --espresso: #28241f;
+      --stone: #746e65;
+      --terracotta: #b85f43;
+      --terracotta-dark: #95472f;
+      --olive: #667253;
+      --gold: #bd9149;
+      --shadow-panel:
+        0 0 0 1px rgba(40, 36, 31, 0.07),
+        0 20px 48px rgba(40, 36, 31, 0.10);
+      --shadow-control:
+        0 0 0 1px rgba(40, 36, 31, 0.07),
+        0 2px 8px rgba(40, 36, 31, 0.06);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 1200px;
+      height: 630px;
+      margin: 0;
+      overflow: hidden;
+      color: var(--espresso);
+      font-family: "Heebo", "Avenir Next", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      background: var(--cream);
+    }
+
+    body {
+      position: relative;
+      background:
+        radial-gradient(circle at 8% 2%, rgba(184, 95, 67, 0.15), transparent 31%),
+        radial-gradient(circle at 93% 17%, rgba(102, 114, 83, 0.11), transparent 28%),
+        linear-gradient(145deg, #fffdf9 0%, #f2ecdf 100%);
+    }
+
+    body::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: 0.16;
+      background-image:
+        linear-gradient(rgba(40, 36, 31, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(40, 36, 31, 0.04) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: linear-gradient(to bottom, transparent, black 35%, black);
+    }
+
+    .frame {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      padding: 43px 58px 44px;
+    }
+
+    .masthead {
+      position: relative;
+      z-index: 3;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 42px;
+    }
+
+    .brand-copy {
+      max-width: 880px;
+    }
+
+    .kicker {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 9px;
+      color: var(--terracotta-dark);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+
+    .kicker-mark {
+      position: relative;
+      width: 22px;
+      height: 14px;
+      border-bottom: 2px solid currentColor;
+      border-radius: 0 0 12px 12px;
+    }
+
+    .kicker-mark::before {
+      content: "";
+      position: absolute;
+      top: -3px;
+      left: 4px;
+      width: 12px;
+      height: 7px;
+      border: 2px solid currentColor;
+      border-bottom: 0;
+      border-radius: 12px 12px 0 0;
+    }
+
+    h1 {
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      margin: 0;
+      font-size: 46px;
+      font-weight: 800;
+      line-height: 1.05;
+      letter-spacing: -0.035em;
+      text-wrap: balance;
+    }
+
+    .domain {
+      color: var(--espresso);
+    }
+
+    .title-rule {
+      width: 2px;
+      height: 43px;
+      border-radius: 999px;
+      background: rgba(184, 95, 67, 0.52);
+    }
+
+    .promise {
+      color: var(--terracotta-dark);
+      font-family: "Playfair Display", Georgia, serif;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+    }
+
+    .description {
+      max-width: 800px;
+      margin: 11px 0 0;
+      color: #625b52;
+      font-size: 20px;
+      font-weight: 500;
+      line-height: 1.35;
+      letter-spacing: -0.012em;
+      text-wrap: pretty;
+    }
+
+    .brand-seal {
+      display: grid;
+      place-items: center;
+      width: 78px;
+      height: 78px;
+      margin-top: 4px;
+      border-radius: 50%;
+      color: var(--terracotta-dark);
+      background: rgba(255, 253, 249, 0.74);
+      box-shadow: var(--shadow-control);
+      transform: rotate(4deg);
+    }
+
+    .brand-seal svg {
+      width: 43px;
+      height: 43px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .product-stage {
+      position: absolute;
+      z-index: 2;
+      left: 58px;
+      right: 58px;
+      bottom: 42px;
+      height: 374px;
+    }
+
+    .library {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      width: 798px;
+      height: 340px;
+      padding: 24px;
+      border-radius: 30px;
+      background: rgba(255, 253, 249, 0.96);
+      box-shadow: var(--shadow-panel);
+    }
+
+    .library-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .scope-switcher {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      height: 43px;
+      padding: 4px;
+      border-radius: 15px;
+      background: #ece5d9;
+      box-shadow: inset 0 1px 2px rgba(40, 36, 31, 0.05);
+    }
+
+    .scope {
+      display: grid;
+      place-items: center;
+      height: 35px;
+      padding: 0 16px;
+      border-radius: 11px;
+      color: #786f64;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .scope.active {
+      color: var(--espresso);
+      background: var(--linen);
+      box-shadow: var(--shadow-control);
+    }
+
+    .filters {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .filter {
+      display: flex;
+      align-items: center;
+      height: 33px;
+      padding: 0 12px;
+      border-radius: 999px;
+      color: #6e675e;
+      background: #f4eee4;
+      font-size: 11px;
+      font-weight: 700;
+      box-shadow: 0 0 0 1px rgba(40, 36, 31, 0.055);
+    }
+
+    .filter.active {
+      color: #fffdf9;
+      background: var(--olive);
+      box-shadow: none;
+    }
+
+    .recipe-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    .recipe-card {
+      min-width: 0;
+      overflow: hidden;
+      border-radius: 18px;
+      background: #fffdf9;
+      box-shadow:
+        0 0 0 1px rgba(40, 36, 31, 0.065),
+        0 8px 18px rgba(40, 36, 31, 0.055);
+    }
+
+    .recipe-photo {
+      position: relative;
+      height: 137px;
+      overflow: hidden;
+      background: #ded6c9;
+    }
+
+    .recipe-photo img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      outline: 1px solid rgba(0, 0, 0, 0.1);
+      outline-offset: -1px;
+    }
+
+    .recipe-photo::after {
+      content: "";
+      position: absolute;
+      inset: auto 0 0;
+      height: 32%;
+      background: linear-gradient(to top, rgba(40, 36, 31, 0.28), transparent);
+    }
+
+    .recipe-owner {
+      position: absolute;
+      z-index: 2;
+      right: 9px;
+      bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 24px;
+      padding: 0 9px 0 5px;
+      border-radius: 999px;
+      color: #fff;
+      background: rgba(40, 36, 31, 0.72);
+      backdrop-filter: blur(6px);
+      font-size: 9px;
+      font-weight: 700;
+    }
+
+    .owner-avatar {
+      display: grid;
+      place-items: center;
+      width: 17px;
+      height: 17px;
+      border-radius: 50%;
+      color: var(--espresso);
+      background: #f4d7c9;
+      font-size: 8px;
+      font-weight: 800;
+    }
+
+    .recipe-body {
+      padding: 12px 13px 13px;
+    }
+
+    .recipe-title {
+      min-height: 21px;
+      overflow: hidden;
+      color: var(--espresso);
+      font-family: "Playfair Display", Georgia, serif;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.15;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .recipe-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 11px;
+    }
+
+    .recipe-tags {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .recipe-tag {
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      color: #5f6255;
+      background: #eef0e8;
+      font-size: 8px;
+      font-weight: 700;
+      line-height: 22px;
+    }
+
+    .add-cooking {
+      display: grid;
+      place-items: center;
+      width: 27px;
+      height: 27px;
+      border-radius: 9px;
+      color: var(--terracotta-dark);
+      background: #f5e6df;
+      box-shadow: 0 0 0 1px rgba(149, 71, 47, 0.10);
+    }
+
+    .add-cooking svg {
+      width: 15px;
+      height: 15px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .live-panel {
+      position: absolute;
+      right: 2px;
+      top: 0;
+      width: 336px;
+      height: 368px;
+      padding: 20px;
+      overflow: hidden;
+      border-radius: 30px;
+      background:
+        radial-gradient(circle at 100% 0%, rgba(184, 95, 67, 0.12), transparent 33%),
+        #fffdf9;
+      box-shadow:
+        0 0 0 1px rgba(40, 36, 31, 0.08),
+        0 26px 60px rgba(40, 36, 31, 0.17);
+      transform: rotate(1.25deg);
+    }
+
+    .live-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .live-heading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .pot-icon {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 13px;
+      color: #fffdf9;
+      background: var(--terracotta);
+      box-shadow: 0 7px 15px rgba(184, 95, 67, 0.22);
+    }
+
+    .pot-icon svg {
+      width: 23px;
+      height: 23px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .live-title small {
+      display: block;
+      color: var(--terracotta-dark);
+      font-size: 8px;
+      font-weight: 800;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
+
+    .live-title strong {
+      display: block;
+      margin-top: 1px;
+      font-family: "Playfair Display", Georgia, serif;
+      font-size: 21px;
+      line-height: 1.05;
+    }
+
+    .recipe-count {
+      display: grid;
+      place-items: center;
+      width: 31px;
+      height: 31px;
+      border-radius: 11px;
+      color: var(--olive);
+      background: rgba(102, 114, 83, 0.12);
+      font-size: 12px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .live-tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 3px;
+      margin-top: 17px;
+      padding: 4px;
+      border-radius: 14px;
+      background: #eee8dd;
+      box-shadow: inset 0 1px 2px rgba(40, 36, 31, 0.045);
+    }
+
+    .live-tab {
+      display: grid;
+      place-items: center;
+      height: 31px;
+      border-radius: 10px;
+      color: #7b7369;
+      font-size: 8px;
+      font-weight: 800;
+    }
+
+    .live-tab.active {
+      color: var(--espresso);
+      background: #fffdf9;
+      box-shadow: var(--shadow-control);
+    }
+
+    .active-recipes {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .active-recipe {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      height: 39px;
+      padding: 4px 9px 4px 4px;
+      border-radius: 12px;
+      background: #f5efe5;
+      font-size: 8px;
+      font-weight: 800;
+    }
+
+    .active-recipe:first-child {
+      color: #fff;
+      background: var(--olive);
+    }
+
+    .active-recipe img {
+      width: 31px;
+      height: 31px;
+      border-radius: 9px;
+      object-fit: cover;
+      outline: 1px solid rgba(0, 0, 0, 0.1);
+      outline-offset: -1px;
+    }
+
+    .checklist {
+      margin-top: 14px;
+    }
+
+    .check-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--stone);
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .progress {
+      color: var(--terracotta-dark);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .check-items {
+      display: grid;
+      gap: 7px;
+      margin-top: 8px;
+    }
+
+    .check-item {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 38px;
+      padding: 7px 10px;
+      border-radius: 12px;
+      color: #554f48;
+      background: #faf6ef;
+      box-shadow: 0 0 0 1px rgba(40, 36, 31, 0.055);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .checkbox {
+      display: grid;
+      flex: 0 0 auto;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 6px;
+      color: #fff;
+      background: var(--olive);
+    }
+
+    .checkbox.empty {
+      background: transparent;
+      box-shadow: inset 0 0 0 1.5px rgba(102, 114, 83, 0.42);
+    }
+
+    .checkbox svg {
+      width: 11px;
+      height: 11px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.1;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .timeline-line {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 11px;
+    }
+
+    .timeline-time {
+      color: var(--terracotta-dark);
+      font-size: 9px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .timeline-track {
+      position: relative;
+      flex: 1;
+      height: 5px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e7ded1;
+    }
+
+    .timeline-track::before {
+      content: "";
+      position: absolute;
+      inset: 0 39% 0 0;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--terracotta), var(--gold));
+    }
+
+    .timeline-note {
+      color: var(--stone);
+      font-size: 8px;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <header class="masthead">
+      <div class="brand-copy">
+        <div class="kicker"><span class="kicker-mark"></span>Your family recipe book</div>
+        <h1>
+          <span class="domain">Levashel.com</span>
+          <span class="title-rule" aria-hidden="true"></span>
+          <span class="promise">Help in the kitchen</span>
+        </h1>
+        <p class="description">Add your recipes, share with friends, and have assistance live while cooking.</p>
+      </div>
+      <div class="brand-seal" aria-hidden="true">
+        <svg viewBox="0 0 48 48">
+          <path d="M8 23h32M11 23v3.2A11.8 11.8 0 0 0 22.8 38h2.4A11.8 11.8 0 0 0 37 26.2V23"/>
+          <path d="M15 23v-2.2A9 9 0 0 1 24 12a9 9 0 0 1 9 8.8V23M24 12V8"/>
+          <path d="M19 8h10"/>
+        </svg>
+      </div>
+    </header>
+
+    <section class="product-stage" aria-label="Levashel product preview">
+      <div class="library">
+        <div class="library-top">
+          <div class="scope-switcher">
+            <span class="scope active">All recipes</span>
+            <span class="scope">My kitchen</span>
+            <span class="scope">Shared with me</span>
+          </div>
+          <div class="filters">
+            <span class="filter active">Favorites</span>
+            <span class="filter">Quick</span>
+            <span class="filter">Dinner</span>
+          </div>
+        </div>
+
+        <div class="recipe-grid">
+          <article class="recipe-card">
+            <div class="recipe-photo">
+              <img src="../images/recipes/GLHTlkm3MKK25mHNV7Tv.jpg" alt="">
+              <div class="recipe-owner"><span class="owner-avatar">T</span>Shared by Tal</div>
+            </div>
+            <div class="recipe-body">
+              <div class="recipe-title">Tuna &amp; corn bake</div>
+              <div class="recipe-meta">
+                <div class="recipe-tags">
+                  <span class="recipe-tag">Quick</span>
+                  <span class="recipe-tag">Family</span>
+                </div>
+                <span class="add-cooking" aria-hidden="true">
+                  <svg viewBox="0 0 20 20"><path d="M3 9.5h14M5 9.5v-.8a5 5 0 0 1 10 0v.8M4 9.5v1.2A4.3 4.3 0 0 0 8.3 15h3.4a4.3 4.3 0 0 0 4.3-4.3V9.5M10 4V2.8"/></svg>
+                </span>
+              </div>
+            </div>
+          </article>
+
+          <article class="recipe-card">
+            <div class="recipe-photo">
+              <img src="../images/recipes/109.jpg" alt="">
+              <div class="recipe-owner"><span class="owner-avatar">E</span>Einav's kitchen</div>
+            </div>
+            <div class="recipe-body">
+              <div class="recipe-title">Chocolate rugelach</div>
+              <div class="recipe-meta">
+                <div class="recipe-tags">
+                  <span class="recipe-tag">Baking</span>
+                  <span class="recipe-tag">Favorite</span>
+                </div>
+                <span class="add-cooking" aria-hidden="true">
+                  <svg viewBox="0 0 20 20"><path d="M3 9.5h14M5 9.5v-.8a5 5 0 0 1 10 0v.8M4 9.5v1.2A4.3 4.3 0 0 0 8.3 15h3.4a4.3 4.3 0 0 0 4.3-4.3V9.5M10 4V2.8"/></svg>
+                </span>
+              </div>
+            </div>
+          </article>
+
+          <article class="recipe-card">
+            <div class="recipe-photo">
+              <img src="../images/recipes/oMjejjrK2qRE3pL4R5xb.jpg" alt="">
+              <div class="recipe-owner"><span class="owner-avatar">A</span>Shared by Avital</div>
+            </div>
+            <div class="recipe-body">
+              <div class="recipe-title">Crispy chicken bites</div>
+              <div class="recipe-meta">
+                <div class="recipe-tags">
+                  <span class="recipe-tag">Dinner</span>
+                  <span class="recipe-tag">Kids</span>
+                </div>
+                <span class="add-cooking" aria-hidden="true">
+                  <svg viewBox="0 0 20 20"><path d="M3 9.5h14M5 9.5v-.8a5 5 0 0 1 10 0v.8M4 9.5v1.2A4.3 4.3 0 0 0 8.3 15h3.4a4.3 4.3 0 0 0 4.3-4.3V9.5M10 4V2.8"/></svg>
+                </span>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <aside class="live-panel">
+        <div class="live-header">
+          <div class="live-heading">
+            <span class="pot-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 11h16M6 11v-1a6 6 0 0 1 12 0v1M5 11v1.5A5.5 5.5 0 0 0 10.5 18h3A5.5 5.5 0 0 0 19 12.5V11M12 4V2.8"/></svg>
+            </span>
+            <span class="live-title"><small>Live workspace</small><strong>Cooking now</strong></span>
+          </div>
+          <span class="recipe-count">2</span>
+        </div>
+
+        <div class="live-tabs">
+          <span class="live-tab">Recipes</span>
+          <span class="live-tab active">Ingredients</span>
+          <span class="live-tab">Timeline</span>
+        </div>
+
+        <div class="active-recipes">
+          <span class="active-recipe"><img src="../images/recipes/GLHTlkm3MKK25mHNV7Tv.jpg" alt="">Tuna bake</span>
+          <span class="active-recipe"><img src="../images/recipes/oMjejjrK2qRE3pL4R5xb.jpg" alt="">Chicken bites</span>
+        </div>
+
+        <div class="checklist">
+          <div class="check-label"><span>Combined ingredients</span><span class="progress">2 / 5</span></div>
+          <div class="check-items">
+            <div class="check-item">
+              <span class="checkbox"><svg viewBox="0 0 12 12"><path d="m2.3 6.1 2.2 2.2 5.1-5"/></svg></span>
+              <span>2 eggs · across 2 recipes</span>
+            </div>
+            <div class="check-item">
+              <span class="checkbox empty"></span>
+              <span>Heat the oven to 180°C</span>
+            </div>
+            <div class="check-item">
+              <span class="checkbox empty"></span>
+              <span>Prepare chicken coating</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="timeline-line">
+          <span class="timeline-time">18 min</span>
+          <span class="timeline-track"></span>
+          <span class="timeline-note">Next: bake</span>
+        </div>
+      </aside>
+    </section>
+  </main>
+</body>
+</html>
