@@ -52,6 +52,10 @@
     URL_PARAMS.has('v2-preview') &&
     URL_PARAMS.has('mock-user')
   );
+  const IS_LOCAL_PUBLIC_DEMO_PREVIEW = (
+    /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) &&
+    URL_PARAMS.has('demo-preview')
+  );
 
   // Allowed email addresses that can edit recipes
   const ALLOWED_EDITORS = [
@@ -75,6 +79,8 @@
   let privateImageUrls = new Map();
   let privateImageRefreshKey = '';
   let v2Unsubscribers = [];
+  let recipeLoadRequestId = 0;
+  let recipeReloadTimer = null;
   let currentLibraryScope = 'all';
   let selectedLibraryKitchenId = '';
   let favoritesFilterActive = false;
@@ -229,8 +235,8 @@
 
   const UI_COPY = {
     he: {
-      eyebrow: 'אוסף המתכונים המשפחתי',
-      title: 'ספר המתכונים של טל ועינב',
+      eyebrow: 'שומרים, משתפים ומבשלים',
+      title: 'ספר המתכונים שלך',
       settings: 'הגדרות',
       signIn: 'התחברות',
       account: 'אזור אישי',
@@ -250,11 +256,20 @@
       video: 'סרטון',
       photo: 'תמונה',
       cookingNow: 'לבישול עכשיו',
-      cookingActive: 'בבישול עכשיו'
+      cookingActive: 'בבישול עכשיו',
+      publicIntroEyebrow: 'חמישה מתכונים להתחלה',
+      publicIntroTitle: 'הספר הציבורי הוא רק טעימה',
+      publicIntroBody: 'אחרי ההתחברות מחכה לך מטבח אישי, ואפשר להצטרף למטבחים משותפים עם משפחה וחברים.',
+      publicIntroAction: 'פתיחת המטבח שלי',
+      publicIntroSteps: [
+        'שומרים מקישור, תמונה או טקסט',
+        'מבשלים כמה מתכונים יחד',
+        'חולקים מטבח, לא סיסמה'
+      ]
     },
     en: {
-      eyebrow: 'The family recipe collection',
-      title: 'Tal & Einav’s Cookbook',
+      eyebrow: 'Save, share, and cook',
+      title: 'Your recipe book',
       settings: 'Settings',
       signIn: 'Sign in',
       account: 'My account',
@@ -274,7 +289,16 @@
       video: 'Video',
       photo: 'Photo',
       cookingNow: 'Cook now',
-      cookingActive: 'Cooking now'
+      cookingActive: 'Cooking now',
+      publicIntroEyebrow: 'Five recipes to begin',
+      publicIntroTitle: 'The public collection is just a taste',
+      publicIntroBody: 'Sign in for your private recipe book and the kitchens you share with family and friends.',
+      publicIntroAction: 'Open my kitchen',
+      publicIntroSteps: [
+        'Save from a link, photo, or note',
+        'Follow several recipes as you cook',
+        'Share a kitchen, not a password'
+      ]
     }
   };
 
@@ -371,6 +395,8 @@
   const signoutBtn = document.getElementById('signout-btn');
   const libraryToolbar = document.getElementById('library-toolbar');
   const libraryKitchenSelect = document.getElementById('library-kitchen-select');
+  const publicIntro = document.getElementById('public-intro');
+  const publicIntroSignin = document.getElementById('public-intro-signin');
   const onboardingModal = document.getElementById('onboarding-modal');
   const onboardingForm = document.getElementById('onboarding-form');
   const onboardingFirstName = document.getElementById('onboarding-first-name');
@@ -478,6 +504,15 @@
       subscribeToCookingWorkspace(user);
       if (COOKBOOK_V2_ENABLED) {
         await initializeV2ForUser(user);
+        if (!IS_LOCAL_COOKING_PREVIEW && !IS_LOCAL_V2_MOCK_PREVIEW) {
+          try {
+            await loadRecipesFromFirestore();
+            renderTagFilters();
+            renderRecipes();
+          } catch (error) {
+            console.error('Failed to refresh recipes for the signed-in state:', error);
+          }
+        }
       }
     });
   }
@@ -488,6 +523,7 @@
     const authLabel = authBtn.querySelector('.header-action-label');
 
     if (currentUser) {
+      if (publicIntro) publicIntro.hidden = true;
       signedOutDiv.style.display = 'none';
       signedInDiv.style.display = 'block';
 
@@ -530,6 +566,7 @@
         `פתיחת החשבון של ${currentUser.displayName || currentUser.email || 'המשתמש'}`
       );
     } else {
+      if (publicIntro) publicIntro.hidden = false;
       signedOutDiv.style.display = 'block';
       signedInDiv.style.display = 'none';
       authBtn.classList.remove('signed-in');
@@ -593,6 +630,10 @@
 
   // Cookbook v2: user-bound recipes, personal libraries, and shared kitchens.
   function stopV2Subscriptions() {
+    if (recipeReloadTimer) {
+      window.clearTimeout(recipeReloadTimer);
+      recipeReloadTimer = null;
+    }
     v2Unsubscribers.forEach(unsubscribe => {
       try { unsubscribe(); } catch (error) {}
     });
@@ -796,6 +837,9 @@
       updateAuthUI();
       updateEditButtonsVisibility();
       subscribeToV2Data();
+      await loadRecipesFromFirestore();
+      renderTagFilters();
+      renderRecipes();
       refreshPrivateImageUrls();
       showToast(isEditingProfile ? 'הפרופיל עודכן' : 'המטבח האישי שלך מוכן', 'success');
     } catch (error) {
@@ -822,6 +866,20 @@
       console.error(`${label} subscription failed:`, error);
     };
 
+    const scheduleRecipeReload = () => {
+      if (recipeReloadTimer) window.clearTimeout(recipeReloadTimer);
+      recipeReloadTimer = window.setTimeout(async () => {
+        recipeReloadTimer = null;
+        try {
+          await loadRecipesFromFirestore();
+          renderTagFilters();
+          renderRecipes();
+        } catch (error) {
+          console.error('Accessible recipe refresh failed:', error);
+        }
+      }, 120);
+    };
+
     v2Unsubscribers.push(
       db.collection('users').doc(currentUser.uid).collection('favorites')
         .onSnapshot(snapshot => {
@@ -838,7 +896,7 @@
           recipeAccessIds = new Set([...recipeAccess.entries()]
             .filter(([, access]) => access.active !== false)
             .map(([recipeId]) => recipeId));
-          renderRecipes();
+          scheduleRecipeReload();
         }, handleSubscriptionError('Recipe access'))
     );
 
@@ -1228,6 +1286,30 @@
     }
   }
 
+  async function claimJoinedKitchenRecipes(recipeIds, kitchenId, invitationId) {
+    if (!currentUser || !recipeIds?.length) return;
+    const writes = recipeIds.map(recipeId => ({
+      ref: db.collection('users').doc(currentUser.uid)
+        .collection('recipeAccess').doc(recipeId),
+      data: {
+        recipeId,
+        active: true,
+        allowCopy: true,
+        grantKind: 'kitchen',
+        kitchenId,
+        invitationId,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      }
+    }));
+    for (let index = 0; index < writes.length; index += 400) {
+      const batch = db.batch();
+      writes.slice(index, index + 400).forEach(write => {
+        batch.set(write.ref, write.data, { merge: true });
+      });
+      await batch.commit();
+    }
+  }
+
   async function applyFutureSharePoliciesToRecipe(recipe) {
     if (!currentUser || recipe.ownerUid !== currentUser.uid) return;
     try {
@@ -1247,6 +1329,10 @@
           if (!kitchen) continue;
           await db.collection('recipes').doc(recipe.id).update({
             sharedKitchenIds: firebase.firestore.FieldValue.arrayUnion(kitchen.id)
+          });
+          await db.collection('kitchens').doc(kitchen.id).update({
+            recipeIds: firebase.firestore.FieldValue.arrayUnion(recipe.id),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
           });
           await writeAccessGrants(
             [recipe.id],
@@ -1327,7 +1413,13 @@
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
           });
         });
-        if (recipeIds.length) await batch.commit();
+        if (recipeIds.length) {
+          batch.update(db.collection('kitchens').doc(kitchenTarget.id), {
+            recipeIds: firebase.firestore.FieldValue.arrayUnion(...recipeIds),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          await batch.commit();
+        }
         await writeAccessGrants(
           recipeIds,
           kitchenTarget.memberIds || [],
@@ -1385,6 +1477,15 @@
             acceptedAt: firebase.firestore.FieldValue.serverTimestamp()
           });
         });
+        const joinedKitchen = await kitchenRef.get();
+        await claimJoinedKitchenRecipes(
+          joinedKitchen.data()?.recipeIds || [],
+          invitation.kitchenId,
+          invitationId
+        );
+        await loadRecipesFromFirestore();
+        renderTagFilters();
+        renderRecipes();
       } else if (invitation.type === 'recipe-share' && invitation.sharePolicyId) {
         const policySnapshot = await db.collection('sharePolicies')
           .doc(invitation.sharePolicyId)
@@ -2114,9 +2215,16 @@
     let cacheAge = Infinity;
 
     try {
-      cached = localStorage.getItem('recipes_cache');
-      const cacheTime = localStorage.getItem('recipes_cache_time');
-      cacheAge = cacheTime ? Date.now() - parseInt(cacheTime) : Infinity;
+      if (COOKBOOK_V2_ENABLED) {
+        // A shared browser must never expose one user's private library to the
+        // next signed-out session through a device-wide recipe cache.
+        localStorage.removeItem('recipes_cache');
+        localStorage.removeItem('recipes_cache_time');
+      } else {
+        cached = localStorage.getItem('recipes_cache');
+        const cacheTime = localStorage.getItem('recipes_cache_time');
+        cacheAge = cacheTime ? Date.now() - parseInt(cacheTime) : Infinity;
+      }
     } catch (e) {
       // localStorage not available (private browsing mode)
       console.log('localStorage not available:', e.message);
@@ -2210,30 +2318,109 @@
     showLoading(false);
   }
 
-  // Load recipes from Firestore with caching
+  async function fetchRecipeDocumentsById(recipeIds) {
+    const ids = [...new Set((recipeIds || []).filter(Boolean))];
+    const documents = new Array(ids.length);
+    let cursor = 0;
+
+    async function worker() {
+      while (cursor < ids.length) {
+        const index = cursor;
+        cursor += 1;
+        try {
+          const snapshot = await db.collection('recipes').doc(ids[index]).get();
+          if (snapshot.exists) {
+            documents[index] = { id: snapshot.id, ...snapshot.data() };
+          }
+        } catch (error) {
+          // A grant may have been revoked between reading recipeAccess and the
+          // recipe itself. Skip only that stale grant; surface real failures.
+          if (error.code !== 'permission-denied' && error.code !== 'not-found') throw error;
+        }
+      }
+    }
+
+    await Promise.all(
+      Array.from({ length: Math.min(20, ids.length) }, () => worker())
+    );
+    return documents.filter(Boolean);
+  }
+
+  // Load only the public catalogue plus recipes the current user may read.
   async function loadRecipesFromFirestore() {
-    // Diagnostic logging for Safari/iOS debugging
+    const requestId = ++recipeLoadRequestId;
+    const viewerUid = COOKBOOK_V2_ENABLED ? (currentUser?.uid || '') : '';
     const startTime = Date.now();
-    console.log('[Firestore] Starting load...');
-    console.log('[Firestore] Navigator:', navigator.userAgent);
-    console.log('[Firestore] Online:', navigator.onLine);
+    console.log(`[Firestore] Starting ${viewerUid ? 'private' : 'public'} recipe load...`);
 
     try {
-      // Use a simple query without orderBy to avoid index requirements
-      const snapshot = await db.collection('recipes').get();
-      const elapsed = Date.now() - startTime;
-      console.log(`[Firestore] Query completed in ${elapsed}ms`);
+      let loadedRecipes;
 
-      if (snapshot.empty) {
-        console.warn('[Firestore] Returned empty snapshot');
-        throw new Error('No recipes in Firestore');
+      if (IS_LOCAL_PUBLIC_DEMO_PREVIEW && !viewerUid) {
+        const response = await fetch('recipes.json');
+        const payload = await response.json();
+        loadedRecipes = payload.recipes || [];
+      } else if (!COOKBOOK_V2_ENABLED) {
+        const snapshot = await db.collection('recipes').get();
+        if (snapshot.empty) throw new Error('No recipes in Firestore');
+        loadedRecipes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      } else {
+        const publicPromise = db.collection('recipes')
+          .where('visibility', '==', 'public')
+          .get();
+        const ownerPromise = viewerUid
+          ? db.collection('recipes').where('ownerUid', '==', viewerUid).get()
+          : Promise.resolve(null);
+        const accessPromise = viewerUid
+          ? db.collection('users').doc(viewerUid).collection('recipeAccess').get()
+          : Promise.resolve(null);
+
+        const [publicSnapshot, ownerSnapshot, accessSnapshot] = await Promise.all([
+          publicPromise,
+          ownerPromise,
+          accessPromise
+        ]);
+        const ownerRecipes = ownerSnapshot
+          ? ownerSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+          : [];
+        const ownedIds = new Set(ownerRecipes.map(recipe => recipe.id));
+        const accessIds = accessSnapshot
+          ? accessSnapshot.docs
+              .filter(doc => doc.data().active !== false)
+              .map(doc => doc.id)
+              .filter(recipeId => !ownedIds.has(recipeId))
+          : [];
+        const accessedRecipes = await fetchRecipeDocumentsById(accessIds);
+        const byId = new Map();
+        [
+          ...publicSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+          ...ownerRecipes,
+          ...accessedRecipes
+        ].forEach(recipe => byId.set(recipe.id, recipe));
+        loadedRecipes = [...byId.values()];
+
+        recipeAccess = new Map(
+          (accessSnapshot?.docs || []).map(doc => [doc.id, doc.data()])
+        );
+        recipeAccessIds = new Set(
+          [...recipeAccess.entries()]
+            .filter(([, access]) => access.active !== false)
+            .map(([recipeId]) => recipeId)
+        );
       }
 
-      // Check if data came from cache or server
-      const fromCache = snapshot.metadata.fromCache;
-      console.log(`[Firestore] Data source: ${fromCache ? 'CACHE' : 'SERVER'}`);
+      if (
+        requestId !== recipeLoadRequestId ||
+        (COOKBOOK_V2_ENABLED && viewerUid !== (currentUser?.uid || ''))
+      ) {
+        return;
+      }
 
-      recipes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const elapsed = Date.now() - startTime;
+      console.log(`[Firestore] Accessible recipe load completed in ${elapsed}ms`);
+
+      if (!loadedRecipes.length) throw new Error('No accessible recipes in Firestore');
+      recipes = loadedRecipes;
       applyLocalV2PreviewMetadata();
       console.log(`[Firestore] Loaded ${recipes.length} recipes`);
 
@@ -2257,6 +2444,7 @@
 
   // Update localStorage cache after any mutation
   function updateRecipesCache() {
+    if (COOKBOOK_V2_ENABLED) return;
     try {
       localStorage.setItem('recipes_cache', JSON.stringify(recipes));
       localStorage.setItem('recipes_cache_time', Date.now().toString());
@@ -2499,8 +2687,11 @@
       });
     });
 
-    // Show tags that have at least one recipe OR are marked as alwaysShow
-    const tagsToShow = AVAILABLE_TAGS.filter(tag => tagCounts[tag.id] > 0 || tag.alwaysShow);
+    // Legacy uploader tags remain useful inside signed-in family libraries, but
+    // a new public visitor should only see filters represented by demo recipes.
+    const tagsToShow = AVAILABLE_TAGS.filter(
+      tag => tagCounts[tag.id] > 0 || (tag.alwaysShow && currentUser)
+    );
 
     const favoritesPill = COOKBOOK_V2_ENABLED && currentUser
       ? `
@@ -4502,6 +4693,7 @@
     authBtn.addEventListener('click', openAuthModal);
     authModalClose.addEventListener('click', closeAuthModal);
     googleSigninBtn.addEventListener('click', signInWithGoogle);
+    publicIntroSignin?.addEventListener('click', signInWithGoogle);
     signoutBtn.addEventListener('click', signOut);
 
     authModal.addEventListener('click', (e) => {
@@ -5056,6 +5248,24 @@
       settingsBtn.querySelector('.header-action-label').textContent = copy.settings;
     }
     if (searchInput) searchInput.placeholder = copy.search;
+    if (publicIntro) {
+      publicIntro.querySelector('.public-intro-eyebrow')?.replaceChildren(
+        copy.publicIntroEyebrow
+      );
+      publicIntro.querySelector('h2')?.replaceChildren(copy.publicIntroTitle);
+      publicIntro.querySelector('.public-intro-copy p')?.replaceChildren(
+        copy.publicIntroBody
+      );
+      publicIntro.querySelectorAll('.public-intro-steps span').forEach((step, index) => {
+        const number = document.createElement('b');
+        number.textContent = String(index + 1).padStart(2, '0');
+        step.replaceChildren(number, ` ${copy.publicIntroSteps[index]}`);
+      });
+      const actionText = document.createTextNode(copy.publicIntroAction);
+      const actionIcon = publicIntroSignin?.querySelector('svg');
+      publicIntroSignin?.replaceChildren(actionText);
+      if (actionIcon) publicIntroSignin.append(actionIcon);
+    }
     document.querySelector('[data-library-scope="all"]')?.replaceChildren(copy.all);
     document.querySelector('[data-library-scope="mine"]')?.replaceChildren(copy.mine);
     document.querySelector('[data-library-scope="shared"]')?.replaceChildren(copy.shared);

@@ -21,6 +21,15 @@ const FIRESTORE_URL =
   `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}` +
   '/databases/(default)/documents/recipes';
 
+function accessToken() {
+  const token = execFileSync('gcloud', ['auth', 'print-access-token'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore']
+  }).trim();
+  if (!token) throw new Error('Google Cloud returned no access token');
+  return token;
+}
+
 function parseFirestoreValue(value = {}) {
   if ('stringValue' in value) return value.stringValue;
   if ('integerValue' in value) return Number(value.integerValue);
@@ -59,6 +68,7 @@ function parseDocument(document) {
 }
 
 async function fetchAllDocuments() {
+  const token = accessToken();
   const documents = [];
   let pageToken = '';
 
@@ -67,9 +77,16 @@ async function fetchAllDocuments() {
     url.searchParams.set('pageSize', '300');
     if (pageToken) url.searchParams.set('pageToken', pageToken);
 
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-Goog-User-Project': PROJECT_ID
+      }
+    });
     if (!response.ok) {
-      throw new Error(`Firestore backup failed with HTTP ${response.status}`);
+      throw new Error(
+        `Firestore backup failed with HTTP ${response.status}: ${await response.text()}`
+      );
     }
 
     const payload = await response.json();

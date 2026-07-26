@@ -61,7 +61,8 @@ beforeEach(async () => {
           einav: 'member',
           admin: 'admin',
           member: 'member'
-        }
+        },
+        recipeIds: ['shared_recipe']
       }),
       setDoc(doc(db, 'recipes/legacy'), {
         name: 'Legacy',
@@ -233,6 +234,19 @@ test('an invited user can atomically join with exactly the invited role', async 
     acceptedByUid: 'outsider'
   });
   await assertSucceeds(batch.commit());
+
+  await assertSucceeds(setDoc(
+    doc(db, 'users/outsider/recipeAccess/shared_recipe'),
+    {
+      recipeId: 'shared_recipe',
+      active: true,
+      allowCopy: true,
+      grantKind: 'kitchen',
+      kitchenId: 'schreiber',
+      invitationId: 'join_invite'
+    }
+  ));
+  await assertSucceeds(getDoc(doc(db, 'recipes/shared_recipe')));
 });
 
 test('recipe owners can grant access but arbitrary users cannot', async () => {

@@ -159,6 +159,7 @@ test('legacy migration preserves every original tag exactly', () => {
   assert.deepEqual(result.patch.tags, recipe.tags);
   assert.equal(result.patch.ownerUid, 'tal-uid');
   assert.deepEqual(result.patch.sharedKitchenIds, ['schreiber']);
+  assert.equal(result.patch.visibility, 'private');
 });
 
 test('legacy migration refuses recipes with missing or conflicting uploader tags', () => {

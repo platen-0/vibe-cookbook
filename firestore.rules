@@ -134,8 +134,36 @@ service cloud.firestore {
                  );
         }
 
+        function targetIsClaimingKitchenAccess() {
+          let invitationId = request.resource.data.invitationId;
+          let invitation = get(
+            /databases/$(database)/documents/invitations/$(invitationId)
+          ).data;
+          let kitchenId = request.resource.data.kitchenId;
+          let kitchen = get(
+            /databases/$(database)/documents/kitchens/$(kitchenId)
+          ).data;
+          let recipe = get(
+            /databases/$(database)/documents/recipes/$(recipeId)
+          ).data;
+          return signedIn() &&
+                 request.auth.uid == userId &&
+                 request.resource.data.recipeId == recipeId &&
+                 request.resource.data.grantKind == 'kitchen' &&
+                 request.resource.data.active == true &&
+                 invitation.type == 'kitchen' &&
+                 invitation.status == 'accepted' &&
+                 invitation.acceptedByUid == request.auth.uid &&
+                 invitation.kitchenId == kitchenId &&
+                 request.auth.uid in kitchen.memberIds &&
+                 recipeId in kitchen.recipeIds &&
+                 kitchenId in recipe.sharedKitchenIds;
+        }
+
         allow read: if signedIn() && request.auth.uid == userId;
-        allow create, update: if recipeOwnerIsGranting() || targetIsClaimingPolicy();
+        allow create, update: if recipeOwnerIsGranting() ||
+                                 targetIsClaimingPolicy() ||
+                                 targetIsClaimingKitchenAccess();
         allow delete: if recipeOwnerIsGranting() ||
                          (signedIn() && request.auth.uid == userId);
       }

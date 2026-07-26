@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>ספר המתכונים של טל</title>
+  <title>Levashel | ספר המתכונים שלך</title>
   <link rel="canonical" href="https://levashel.com/">
   <meta name="description" content="Save recipes from links, photos, and notes, share them with family and friends, and follow several recipes while you cook.">
 
@@ -46,7 +46,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
   <!-- Firebase Storage removed - requires paid plan -->
 
-  <link rel="stylesheet" href="styles.css?v=36660287">
+  <link rel="stylesheet" href="styles.css?v=04db6415">
 </head>
 <body>
   <div class="app-container">
@@ -55,8 +55,8 @@
       <div class="header-inner">
         <div class="header-top">
           <div class="header-brand">
-            <span class="header-eyebrow">אוסף המתכונים המשפחתי</span>
-            <h1>ספר המתכונים של טל ועינב</h1>
+            <span class="header-eyebrow">שומרים, משתפים ומבשלים</span>
+            <h1>ספר המתכונים שלך</h1>
           </div>
           <div class="header-actions" aria-label="פעולות חשבון והגדרות">
             <button class="header-action settings-btn" id="settings-btn" type="button" title="הגדרות" aria-label="פתיחת הגדרות">
@@ -84,6 +84,24 @@
         </div>
       </div>
     </header>
+
+    <!-- Signed-out public introduction -->
+    <section class="public-intro" id="public-intro" aria-labelledby="public-intro-title">
+      <div class="public-intro-copy">
+        <span class="public-intro-eyebrow">חמישה מתכונים להתחלה</span>
+        <h2 id="public-intro-title">הספר הציבורי הוא רק טעימה</h2>
+        <p>אחרי ההתחברות מחכה לך מטבח אישי, ואפשר להצטרף למטבחים משותפים עם משפחה וחברים.</p>
+      </div>
+      <div class="public-intro-steps" aria-label="מה אפשר לעשות ב־Levashel">
+        <span><b>01</b> שומרים מקישור, תמונה או טקסט</span>
+        <span><b>02</b> מבשלים כמה מתכונים יחד</span>
+        <span><b>03</b> חולקים מטבח, לא סיסמה</span>
+      </div>
+      <button class="public-intro-action" id="public-intro-signin" type="button">
+        פתיחת המטבח שלי
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+      </button>
+    </section>
 
     <!-- Personal library scopes (Cookbook v2) -->
     <section class="library-toolbar" id="library-toolbar" aria-label="בחירת ספרייה" hidden>
@@ -806,6 +824,6 @@
   <script src="import-config.js?v=dc2de91e"></script>
   <script src="cooking-workspace-core.js?v=0ae85342"></script>
   <script src="cookbook-v2-core.js?v=e4840a89"></script>
-  <script src="app.js?v=0af83a48"></script>
+  <script src="app.js?v=2b63553b"></script>
 </body>
 </html>

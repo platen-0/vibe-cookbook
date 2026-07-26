@@ -257,7 +257,7 @@
         ownerUid: owner.uid,
         homeKitchenId: personalKitchenId(owner.uid),
         sharedKitchenIds: schreiberKitchenId ? [schreiberKitchenId] : [],
-        visibility: 'public',
+        visibility: 'private',
         author: {
           uid: owner.uid,
           username: owner.username,
