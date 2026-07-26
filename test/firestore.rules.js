@@ -166,6 +166,63 @@ test('owners and kitchen admins edit shared recipes; members and outsiders canno
   }));
 });
 
+test('automation cannot replace protected human recipe text', async () => {
+  const recipeRef = doc(authed('tal'), 'recipes/private_recipe');
+  await assertSucceeds(updateDoc(recipeRef, {
+    content: {
+      text: 'טקסט שתוקן ידנית',
+      textMeta: { source: 'human', protected: true }
+    }
+  }));
+  await assertFails(updateDoc(recipeRef, {
+    content: {
+      text: 'חילוץ אוטומטי חדש',
+      textMeta: { source: 'generated', protected: false }
+    }
+  }));
+  await assertSucceeds(updateDoc(recipeRef, {
+    content: {
+      text: 'תיקון אנושי נוסף',
+      textMeta: { source: 'human', protected: true }
+    }
+  }));
+});
+
+test('recipe revisions are append-only and restricted to editors', async () => {
+  const ownerRevision = doc(authed('tal'), 'recipes/shared_recipe/revisions/rev_owner');
+  await assertSucceeds(setDoc(ownerRevision, {
+    kind: 'recipe-text',
+    value: { text: 'previous' },
+    editorUid: 'tal',
+    createdAt: '2026-07-26T10:00:00.000Z'
+  }));
+  await assertSucceeds(getDoc(
+    doc(authed('member'), 'recipes/shared_recipe/revisions/rev_owner')
+  ));
+  await assertFails(updateDoc(ownerRevision, { value: { text: 'tampered' } }));
+  await assertFails(setDoc(
+    doc(authed('member'), 'recipes/shared_recipe/revisions/rev_member'),
+    {
+      kind: 'recipe-text',
+      value: { text: 'forged' },
+      editorUid: 'member'
+    }
+  ));
+});
+
+test('personal recipe overrides are private to their user', async () => {
+  await assertSucceeds(setDoc(
+    doc(authed('member'), 'users/member/recipeOverrides/shared_recipe'),
+    { translations: { en: { text: 'My correction', source: 'human' } } }
+  ));
+  await assertSucceeds(getDoc(
+    doc(authed('member'), 'users/member/recipeOverrides/shared_recipe')
+  ));
+  await assertFails(getDoc(
+    doc(authed('tal'), 'users/member/recipeOverrides/shared_recipe')
+  ));
+});
+
 test('favorites are private to their user', async () => {
   await assertSucceeds(setDoc(doc(authed('einav'), 'users/einav/favorites/public_recipe'), {
     recipeId: 'public_recipe'

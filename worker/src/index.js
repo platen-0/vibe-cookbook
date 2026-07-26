@@ -3,6 +3,12 @@ const MAX_PAGE_BYTES = 1_500_000;
 const MAX_REPOSITORY_IMAGE_BYTES = 950_000;
 const MAX_PAGE_TEXT_CHARS = 160_000;
 const MAX_SOCIAL_TEXT_CHARS = 30_000;
+const INTELLIGENCE_PIPELINES = {
+  extraction: 'extraction-v1',
+  imageAnalysis: 'image-analysis-v1',
+  translation: 'translation-v1',
+  cookingPlan: 'cooking-plan-v1'
+};
 const GOOGLE_JWKS_URL =
   'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
 
@@ -146,6 +152,27 @@ export async function extractRecipeDraft(input, user, env) {
     };
   }
 
+  const artifactKey = `extraction/${INTELLIGENCE_PIPELINES.extraction}/${await contentHash(
+    JSON.stringify({
+      sourceUrl,
+      socialText,
+      screenshots,
+      pageText: page.recipeText || page.socialDescription ||
+        page.firstPosterComment || page.pageText,
+      categories,
+      tags
+    })
+  )}`;
+  const cachedArtifact = await readIntelligenceArtifact(env, artifactKey);
+  if (cachedArtifact) {
+    return {
+      ...cachedArtifact,
+      cached: true,
+      artifactKey,
+      pipelineVersion: INTELLIGENCE_PIPELINES.extraction
+    };
+  }
+
   const modelDraft = await requestOpenAiDraft({
     env,
     user,
@@ -178,7 +205,7 @@ export async function extractRecipeDraft(input, user, env) {
     modelDraft.recipeFound === true &&
     (normalizedDraft.ingredients.length > 0 || normalizedDraft.instructions.length > 0);
   if (!recipeFound) {
-    return {
+    const result = {
       draft: null,
       imageCandidates: page.imageCandidates,
       source: page.source,
@@ -187,13 +214,20 @@ export async function extractRecipeDraft(input, user, env) {
         ? 'לא נמצא בתיאור, בתגובה הראשונה או בתמונות טקסט שמכיל מתכון. אפשר להדביק את הטקסט או לצרף צילום מסך.'
         : 'לא נמצאו במקור מרכיבים, כמויות או הוראות הכנה ברורות.'
     };
+    await writeIntelligenceArtifact(env, artifactKey, result);
+    return {
+      ...result,
+      cached: false,
+      artifactKey,
+      pipelineVersion: INTELLIGENCE_PIPELINES.extraction
+    };
   }
   normalizedDraft.recipeText = formatRecipeText(
     normalizedDraft.ingredients,
     normalizedDraft.instructions
   );
 
-  return {
+  const result = {
     draft: normalizedDraft,
     imageCandidates: page.imageCandidates,
     source: page.source,
@@ -204,6 +238,13 @@ export async function extractRecipeDraft(input, user, env) {
       !page.firstPosterComment &&
       screenshots.length === 0,
     warning: ''
+  };
+  await writeIntelligenceArtifact(env, artifactKey, result);
+  return {
+    ...result,
+    cached: false,
+    artifactKey,
+    pipelineVersion: INTELLIGENCE_PIPELINES.extraction
   };
 }
 
@@ -216,11 +257,20 @@ export async function translateRecipe(input, user, env) {
     throw new HttpError(400, 'Invalid recipe translation request');
   }
   await verifyFirestoreRecipeAccess(recipeId, user.token, env);
-  const cacheKey = `translation/en/${await contentHash(`${recipeId}\n${title}\n${text}`)}`;
-  const cached = env.RECIPE_INTELLIGENCE
-    ? await env.RECIPE_INTELLIGENCE.get(cacheKey, { type: 'json' })
-    : null;
-  if (cached) return { ...cached, cached: true };
+  const sourceHash = await contentHash(`${title}\n${text}`);
+  const cacheKey = `translation/${INTELLIGENCE_PIPELINES.translation}/en/${await contentHash(
+    `${recipeId}\n${sourceHash}`
+  )}`;
+  const cached = await readIntelligenceArtifact(env, cacheKey);
+  if (cached) {
+    return {
+      ...cached,
+      cached: true,
+      artifactKey: cacheKey,
+      sourceHash,
+      pipelineVersion: INTELLIGENCE_PIPELINES.translation
+    };
+  }
 
   const schema = {
     type: 'object',
@@ -249,14 +299,13 @@ export async function translateRecipe(input, user, env) {
   const result = {
     title: normalizeOptionalString(translated.title, 220) || title,
     text: normalizeOptionalString(translated.text, 35_000),
-    targetLanguage: 'en'
+    targetLanguage: 'en',
+    sourceHash,
+    pipelineVersion: INTELLIGENCE_PIPELINES.translation,
+    model: env.OPENAI_MODEL || 'gpt-5.6-terra'
   };
-  if (env.RECIPE_INTELLIGENCE) {
-    await env.RECIPE_INTELLIGENCE.put(cacheKey, JSON.stringify(result), {
-      expirationTtl: 60 * 60 * 24 * 365
-    });
-  }
-  return { ...result, cached: false };
+  await writeIntelligenceArtifact(env, cacheKey, result);
+  return { ...result, cached: false, artifactKey: cacheKey };
 }
 
 export async function createCookingPlan(input, user, env) {
@@ -274,10 +323,10 @@ export async function createCookingPlan(input, user, env) {
     recipes.map(recipe => verifyFirestoreRecipeAccess(recipe.id, user.token, env))
   );
 
-  const cacheKey = `cooking-plan/v1/${await contentHash(JSON.stringify(recipes))}`;
-  const cached = env.RECIPE_INTELLIGENCE
-    ? await env.RECIPE_INTELLIGENCE.get(cacheKey, { type: 'json' })
-    : null;
+  const cacheKey = `cooking-plan/${INTELLIGENCE_PIPELINES.cookingPlan}/${await contentHash(
+    JSON.stringify(recipes)
+  )}`;
+  const cached = await readIntelligenceArtifact(env, cacheKey);
   if (cached) return { ...cached, cached: true, cacheKey };
 
   const schema = buildCookingPlanSchema();
@@ -301,11 +350,7 @@ export async function createCookingPlan(input, user, env) {
     ].join('\n\n')
   });
   const result = normalizeCookingPlan(modelPlan, recipes);
-  if (env.RECIPE_INTELLIGENCE) {
-    await env.RECIPE_INTELLIGENCE.put(cacheKey, JSON.stringify(result), {
-      expirationTtl: 60 * 60 * 24 * 180
-    });
-  }
+  await writeIntelligenceArtifact(env, cacheKey, result);
   return { ...result, cached: false, cacheKey };
 }
 
@@ -664,6 +709,18 @@ export async function analyzeRecipeImage(input, user, env) {
   const imageUrl = normalizeScreenshots([input.dataUrl])[0];
   const categories = normalizeChoices(input.categories, 100);
   const tags = normalizeChoices(input.tags, 100);
+  const artifactKey = `image-analysis/${INTELLIGENCE_PIPELINES.imageAnalysis}/${await contentHash(
+    JSON.stringify({ imageUrl, categories, tags })
+  )}`;
+  const cachedArtifact = await readIntelligenceArtifact(env, artifactKey);
+  if (cachedArtifact) {
+    return {
+      ...cachedArtifact,
+      cached: true,
+      artifactKey,
+      pipelineVersion: INTELLIGENCE_PIPELINES.imageAnalysis
+    };
+  }
   const schema = buildImageRecipeSchema(
     categories.map((item) => item.id),
     tags.map((item) => item.id)
@@ -767,7 +824,7 @@ export async function analyzeRecipeImage(input, user, env) {
       }
     : null;
 
-  return {
+  const normalizedResult = {
     classification: [
       'food_photo',
       'recipe_text',
@@ -779,6 +836,13 @@ export async function analyzeRecipeImage(input, user, env) {
       : 'other',
     recipeFound,
     draft
+  };
+  await writeIntelligenceArtifact(env, artifactKey, normalizedResult);
+  return {
+    ...normalizedResult,
+    cached: false,
+    artifactKey,
+    pipelineVersion: INTELLIGENCE_PIPELINES.imageAnalysis
   };
 }
 
@@ -1825,6 +1889,18 @@ async function contentHash(value) {
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
+}
+
+async function readIntelligenceArtifact(env, key) {
+  if (!env.RECIPE_INTELLIGENCE) return null;
+  return env.RECIPE_INTELLIGENCE.get(key, { type: 'json' });
+}
+
+async function writeIntelligenceArtifact(env, key, value) {
+  if (!env.RECIPE_INTELLIGENCE) return;
+  // Content-addressed artifacts intentionally have no TTL. A changed recipe,
+  // prompt, or pipeline version creates a new key instead of mutating history.
+  await env.RECIPE_INTELLIGENCE.put(key, JSON.stringify(value));
 }
 
 function jsonResponse(body, status = 200, headers = {}) {

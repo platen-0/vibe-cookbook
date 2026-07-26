@@ -62,12 +62,30 @@ service cloud.firestore {
              );
     }
 
+    function canReadRecipeData(data, recipeId) {
+      return !('ownerUid' in data) ||
+             data.visibility == 'public' ||
+             ownsRecipeData(data) ||
+             hasRecipeAccess(recipeId);
+    }
+
+    function hasProtectedHumanText(data) {
+      let content = data.get('content', {});
+      let meta = content.get('textMeta', {});
+      return meta.get('source', '') in ['human', 'human-approved'];
+    }
+
+    function humanTextPrecedenceIsPreserved() {
+      let previousContent = resource.data.get('content', {});
+      let nextContent = request.resource.data.get('content', {});
+      return !hasProtectedHumanText(resource.data) ||
+             nextContent.get('text', '') == previousContent.get('text', '') ||
+             hasProtectedHumanText(request.resource.data);
+    }
+
     match /recipes/{recipeId} {
       // Legacy documents stay public until the audited ownership migration.
-      allow read: if !('ownerUid' in resource.data) ||
-                     resource.data.visibility == 'public' ||
-                     ownsRecipeData(resource.data) ||
-                     hasRecipeAccess(recipeId);
+      allow read: if canReadRecipeData(resource.data, recipeId);
 
       allow create: if (
                       profileComplete() &&
@@ -85,11 +103,13 @@ service cloud.firestore {
                       canEditRecipeData(resource.data) &&
                       request.resource.data.ownerUid == resource.data.ownerUid &&
                       request.resource.data.homeKitchenId == resource.data.homeKitchenId &&
-                      request.resource.data.tags is list
+                      request.resource.data.tags is list &&
+                      humanTextPrecedenceIsPreserved()
                     ) ||
                     (
                       !('ownerUid' in resource.data) &&
-                      isAllowedEditor()
+                      isAllowedEditor() &&
+                      humanTextPrecedenceIsPreserved()
                     );
 
       allow delete: if (
@@ -100,6 +120,20 @@ service cloud.firestore {
                       !('ownerUid' in resource.data) &&
                       isAllowedEditor()
                     );
+
+      match /revisions/{revisionId} {
+        function parentRecipe() {
+          return get(
+            /databases/$(database)/documents/recipes/$(recipeId)
+          ).data;
+        }
+
+        allow read: if canReadRecipeData(parentRecipe(), recipeId);
+        allow create: if canEditRecipeData(parentRecipe()) &&
+                         request.resource.data.editorUid == request.auth.uid &&
+                         request.resource.data.kind in ['recipe-text', 'translation-en'];
+        allow update, delete: if false;
+      }
     }
 
     match /users/{userId} {
@@ -166,6 +200,11 @@ service cloud.firestore {
                                  targetIsClaimingKitchenAccess();
         allow delete: if recipeOwnerIsGranting() ||
                          (signedIn() && request.auth.uid == userId);
+      }
+
+      match /recipeOverrides/{recipeId} {
+        allow read, create, update, delete: if signedIn() &&
+                                             request.auth.uid == userId;
       }
     }
 

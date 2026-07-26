@@ -46,7 +46,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
   <!-- Firebase Storage removed - requires paid plan -->
 
-  <link rel="stylesheet" href="styles.css?v=4cc21655">
+  <link rel="stylesheet" href="styles.css?v=78492ef4">
 </head>
 <body>
   <div class="app-container">
@@ -380,6 +380,43 @@
             <button type="button" class="btn btn-primary" id="save-transcription">
               <span class="btn-text">שמור טקסט</span>
               <span class="btn-loading" style="display:none;">שומר...</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Human translation correction -->
+    <div class="modal" id="translation-edit-modal">
+      <div class="modal-content transcription-modal-content intelligence-edit-modal">
+        <button class="modal-close" id="translation-edit-close">&times;</button>
+        <div class="modal-body">
+          <span class="import-eyebrow">תיקון אנושי</span>
+          <h2 class="modal-title">עריכת התרגום לאנגלית</h2>
+          <p class="modal-subtitle">התיקון נשמר מעל התרגום האוטומטי. הפעלה נוספת של התרגום לא תחליף אותו.</p>
+
+          <div class="form-group">
+            <label for="translation-title">שם המתכון באנגלית</label>
+            <input type="text" id="translation-title" dir="ltr" maxlength="220">
+          </div>
+          <div class="form-group">
+            <label for="translation-text">טקסט המתכון באנגלית</label>
+            <textarea id="translation-text" rows="14" dir="ltr"></textarea>
+          </div>
+
+          <label class="translation-scope-choice" id="translation-scope-choice">
+            <input type="checkbox" id="translation-save-canonical" checked>
+            <span>
+              <strong>שמירה לכל מי שרואה את המתכון</strong>
+              <small>זמין לבעלי המתכון ולמנהלי המטבח. אחרת התיקון יישמר רק עבורך.</small>
+            </span>
+          </label>
+
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" id="translation-edit-cancel">ביטול</button>
+            <button type="button" class="btn btn-primary" id="translation-edit-save">
+              <span class="btn-text">שמירת התיקון</span>
+              <span class="btn-loading" hidden>שומר…</span>
             </button>
           </div>
         </div>
@@ -841,6 +878,6 @@
   <script src="import-config.js?v=dc2de91e"></script>
   <script src="cooking-workspace-core.js?v=0ae85342"></script>
   <script src="cookbook-v2-core.js?v=e4840a89"></script>
-  <script src="app.js?v=8c1e7392"></script>
+  <script src="app.js?v=48121340"></script>
 </body>
 </html>

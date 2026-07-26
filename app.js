@@ -56,6 +56,10 @@
     /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) &&
     URL_PARAMS.has('demo-preview')
   );
+  const IS_LOCAL_INTELLIGENCE_PREVIEW = (
+    /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) &&
+    URL_PARAMS.has('intelligence-preview')
+  );
 
   // Allowed email addresses that can edit recipes
   const ALLOWED_EDITORS = [
@@ -89,6 +93,8 @@
   let appLanguage = 'he';
   let translationCache = new Map();
   let translationLoadingIds = new Set();
+  let personalRecipeOverrides = new Map();
+  let activeTranslationByRecipe = new Map();
 
   // State
   let recipes = [];
@@ -353,6 +359,14 @@
   const cancelTranscriptionBtn = document.getElementById('cancel-transcription');
   const saveTranscriptionBtn = document.getElementById('save-transcription');
   const transcriptionText = document.getElementById('transcription-text');
+  const translationEditModal = document.getElementById('translation-edit-modal');
+  const translationEditClose = document.getElementById('translation-edit-close');
+  const translationEditCancel = document.getElementById('translation-edit-cancel');
+  const translationEditSave = document.getElementById('translation-edit-save');
+  const translationTitleInput = document.getElementById('translation-title');
+  const translationTextInput = document.getElementById('translation-text');
+  const translationSaveCanonical = document.getElementById('translation-save-canonical');
+  const translationScopeChoice = document.getElementById('translation-scope-choice');
   const settingsModal = document.getElementById('settings-modal');
   const settingsBtn = document.getElementById('settings-btn');
   const settingsModalClose = document.getElementById('settings-modal-close');
@@ -675,6 +689,8 @@
     recipeAccess = new Map();
     pendingInvitations = [];
     hiddenDemoRecipeIds = new Set();
+    personalRecipeOverrides = new Map();
+    activeTranslationByRecipe = new Map();
     privateImageUrls = new Map();
     privateImageRefreshKey = '';
   }
@@ -718,6 +734,22 @@
     return [...new Uint8Array(digest)]
       .map(byte => byte.toString(16).padStart(2, '0'))
       .join('');
+  }
+
+  async function sha256Content(value) {
+    const bytes = new TextEncoder().encode(String(value || ''));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(digest)]
+      .map(byte => byte.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  function recipeSourceText(recipe) {
+    return recipe?.content?.text || recipe?.content?.transcription || '';
+  }
+
+  function isHumanProtectedText(recipe) {
+    return ['human', 'human-approved'].includes(recipe?.content?.textMeta?.source);
   }
 
   async function initializeV2ForUser(user) {
@@ -2524,7 +2556,32 @@
 
   function applyLocalV2PreviewMetadata() {
     if (!IS_LOCAL_V2_MOCK_PREVIEW) return;
-    recipes = recipes.map(recipe => {
+    recipes = recipes.map((recipe, index) => {
+      if (IS_LOCAL_INTELLIGENCE_PREVIEW && index === 0) {
+        const existingText = recipeSourceText(recipe);
+        return {
+          ...recipe,
+          isDemo: false,
+          ownerUid: 'tal-preview',
+          homeKitchenId: 'personal_tal-preview',
+          sharedKitchenIds: ['schreiber'],
+          editorUids: ['tal-preview'],
+          visibility: 'private',
+          author: { uid: 'tal-preview', username: 'tal', firstName: 'טל' },
+          content: {
+            ...(recipe.content || {}),
+            textMeta: { source: 'human', protected: true }
+          },
+          intelligence: {
+            ...(recipe.intelligence || {}),
+            extractionCandidate: {
+              text: `${existingText}\n\nהצעה חדשה: להוסיף בסיום מעט קליפת לימון טרייה.`,
+              artifactKey: 'local-preview-artifact',
+              pipelineVersion: 'extraction-v1'
+            }
+          }
+        };
+      }
       if (recipe.ownerUid) return recipe;
       const ownerKey = (recipe.tags || []).includes('einav') ? 'einav' : 'tal';
       const ownerUid = ownerKey === 'einav' ? 'einav-preview' : 'tal-preview';
@@ -3103,6 +3160,9 @@
         <div class="transcription-box recipe-reading-box" style="width: 100%; margin-bottom: 12px;">
           <div class="recipe-reading-header">
             <h4 id="recipe-text-heading">${appLanguage === 'en' ? 'Recipe text' : 'טקסט המתכון'}</h4>
+            ${isHumanProtectedText(recipe)
+              ? '<span class="human-lock-badge">עריכה אנושית מוגנת</span>'
+              : ''}
             <div class="recipe-language-toggle" role="group" aria-label="${appLanguage === 'en' ? 'Recipe language' : 'שפת המתכון'}">
               <button type="button" class="${appLanguage === 'he' ? 'active' : ''}" data-action="set-recipe-language" data-language="he" aria-pressed="${appLanguage === 'he'}">
                 ${appLanguage === 'en' ? 'Original' : 'מקור'}
@@ -3114,10 +3174,50 @@
           </div>
           <p id="recipe-text-content" dir="auto">${escapeHtml(recipeText)}</p>
           <div class="recipe-translation-status" id="recipe-translation-status" aria-live="polite"></div>
+          <button
+            type="button"
+            class="intelligence-text-action"
+            id="edit-translation-btn"
+            data-action="edit-translation"
+            hidden
+          >תיקון התרגום</button>
           ${recipeCanEdit ? `<button class="recipe-modal-action add-transcription-btn" data-action="edit-transcription" style="margin-top: 12px;">
             עריכת טקסט
           </button>` : ''}
         </div>
+      `;
+    }
+
+    const extractionCandidate = recipe.intelligence?.extractionCandidate;
+    if (recipeCanEdit && extractionCandidate?.text) {
+      contentHtml += `
+        <section class="generation-review" aria-labelledby="generation-review-title">
+          <div class="generation-review-heading">
+            <div>
+              <span class="generation-review-eyebrow">הצעה חדשה — הטקסט השמור לא השתנה</span>
+              <h3 id="generation-review-title">בדיקת חילוץ מחדש</h3>
+            </div>
+            <span class="human-lock-badge">עריכה אנושית מוגנת</span>
+          </div>
+          <div class="generation-compare">
+            <article>
+              <span>הטקסט השמור</span>
+              <pre>${escapeHtml(recipeText || 'אין עדיין טקסט שמור')}</pre>
+            </article>
+            <article class="candidate">
+              <span>החילוץ החדש</span>
+              <pre>${escapeHtml(extractionCandidate.text)}</pre>
+            </article>
+          </div>
+          <div class="generation-review-actions">
+            <button type="button" class="recipe-v2-action" data-action="dismiss-extraction-candidate">
+              שמירת הטקסט הקיים
+            </button>
+            <button type="button" class="recipe-modal-action generation-apply" data-action="apply-extraction-candidate">
+              החלפה בחילוץ החדש
+            </button>
+          </div>
+        </section>
       `;
     }
 
@@ -3289,6 +3389,7 @@
     const textElement = document.getElementById('recipe-text-content');
     const titleElement = modalBody.querySelector('.modal-title');
     const statusElement = document.getElementById('recipe-translation-status');
+    const editTranslationButton = document.getElementById('edit-translation-btn');
     if (!recipe || !textElement || currentRecipeId !== recipeId) return;
 
     document.querySelectorAll('.recipe-language-toggle button').forEach(button => {
@@ -3303,6 +3404,7 @@
       textElement.dir = 'auto';
       if (titleElement) titleElement.textContent = recipe.name || '';
       if (statusElement) statusElement.textContent = '';
+      if (editTranslationButton) editTranslationButton.hidden = true;
       return;
     }
 
@@ -3312,12 +3414,35 @@
       return;
     }
 
+    const sourceHash = await sha256Content(`${recipe.name || ''}\n${sourceText}`);
+    const personalOverride = await loadPersonalRecipeOverride(recipeId);
+    if (currentRecipeId !== recipeId) return;
+    const personalTranslation = personalOverride?.translations?.en;
+    const canonicalTranslation = recipe.intelligence?.translations?.en;
+    const humanTranslation = personalTranslation || canonicalTranslation;
+    if (humanTranslation?.text) {
+      activeTranslationByRecipe.set(recipeId, humanTranslation);
+      textElement.textContent = humanTranslation.text;
+      textElement.dir = 'ltr';
+      if (titleElement) titleElement.textContent = humanTranslation.title || recipe.name || '';
+      if (statusElement) {
+        statusElement.textContent = humanTranslation.sourceHash &&
+          humanTranslation.sourceHash !== sourceHash
+          ? 'המקור השתנה מאז התיקון האנושי. התיקון נשמר ולא הוחלף.'
+          : (personalTranslation ? 'התיקון האישי שלך' : 'תרגום שתוקן ונשמר');
+      }
+      if (editTranslationButton) editTranslationButton.hidden = false;
+      return;
+    }
+
     const cached = translationCache.get(recipeId);
     if (cached) {
+      activeTranslationByRecipe.set(recipeId, cached);
       textElement.textContent = cached.text || sourceText;
       textElement.dir = 'ltr';
       if (titleElement) titleElement.textContent = cached.title || recipe.name || '';
       if (statusElement) statusElement.textContent = '';
+      if (editTranslationButton) editTranslationButton.hidden = false;
       return;
     }
     if (translationLoadingIds.has(recipeId)) return;
@@ -3341,6 +3466,7 @@
             text: sourceText
           });
       translationCache.set(recipeId, translation);
+      activeTranslationByRecipe.set(recipeId, translation);
       if (currentRecipeId === recipeId) {
         textElement.textContent = translation.text || sourceText;
         textElement.dir = 'ltr';
@@ -3350,6 +3476,7 @@
             ? (appLanguage === 'en' ? 'Saved translation' : 'תרגום שמור')
             : '';
         }
+        if (editTranslationButton) editTranslationButton.hidden = false;
       }
     } catch (error) {
       console.error('Recipe translation failed:', error);
@@ -3365,6 +3492,150 @@
     } finally {
       translationLoadingIds.delete(recipeId);
       textElement.classList.remove('translation-loading');
+    }
+  }
+
+  async function loadPersonalRecipeOverride(recipeId) {
+    if (!currentUser || !COOKBOOK_V2_ENABLED) return null;
+    if (IS_LOCAL_V2_MOCK_PREVIEW) {
+      return personalRecipeOverrides.get(recipeId) || null;
+    }
+    if (personalRecipeOverrides.has(recipeId)) {
+      return personalRecipeOverrides.get(recipeId);
+    }
+    try {
+      const snapshot = await db.collection('users').doc(currentUser.uid)
+        .collection('recipeOverrides').doc(recipeId).get();
+      const value = snapshot.exists ? snapshot.data() : null;
+      personalRecipeOverrides.set(recipeId, value);
+      return value;
+    } catch (error) {
+      console.error('Personal recipe override load failed:', error);
+      return null;
+    }
+  }
+
+  function openTranslationEditModal() {
+    const recipe = recipes.find(item => item.id === currentRecipeId);
+    const translation = activeTranslationByRecipe.get(currentRecipeId);
+    if (!recipe || !translation || !currentUser) return;
+    translationTitleInput.value = translation.title || recipe.name || '';
+    translationTextInput.value = translation.text || '';
+    const canSaveCanonical = canEditRecipeNow(recipe);
+    translationScopeChoice.hidden = !canSaveCanonical;
+    translationSaveCanonical.checked = canSaveCanonical;
+    translationEditModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() => translationTitleInput.focus());
+  }
+
+  function closeTranslationEditModal() {
+    translationEditModal.classList.remove('active');
+    translationTitleInput.value = '';
+    translationTextInput.value = '';
+    if (!document.querySelector('.modal.active')) document.body.style.overflow = '';
+  }
+
+  function addRecipeRevisionToBatch(batch, recipe, kind, value) {
+    const revisionRef = db.collection('recipes').doc(recipe.id)
+      .collection('revisions').doc();
+    batch.set(revisionRef, {
+      kind,
+      value,
+      editorUid: currentUser.uid,
+      editorEmail: currentUser.email || '',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  }
+
+  async function saveTranslationCorrection() {
+    const recipe = recipes.find(item => item.id === currentRecipeId);
+    const title = translationTitleInput.value.trim();
+    const text = translationTextInput.value.trim();
+    if (!recipe || !currentUser || !text) {
+      showToast('נא להזין את טקסט התרגום', 'error');
+      return;
+    }
+
+    const sourceHash = await sha256Content(
+      `${recipe.name || ''}\n${recipeSourceText(recipe)}`
+    );
+    const correction = {
+      title: title || recipe.name || '',
+      text,
+      targetLanguage: 'en',
+      source: 'human',
+      sourceHash,
+      editedByUid: currentUser.uid,
+      editedByUsername: userProfile?.username || '',
+      editedAt: new Date().toISOString()
+    };
+    const saveCanonical = canEditRecipeNow(recipe) && translationSaveCanonical.checked;
+    const textNode = translationEditSave.querySelector('.btn-text');
+    const loadingNode = translationEditSave.querySelector('.btn-loading');
+    translationEditSave.disabled = true;
+    textNode.hidden = true;
+    loadingNode.hidden = false;
+
+    try {
+      if (saveCanonical) {
+        const batch = db.batch();
+        addRecipeRevisionToBatch(
+          batch,
+          recipe,
+          'translation-en',
+          recipe.intelligence?.translations?.en || null
+        );
+        batch.update(db.collection('recipes').doc(recipe.id), {
+          'intelligence.translations.en': correction
+        });
+        const personal = personalRecipeOverrides.get(recipe.id);
+        if (personal?.translations?.en) {
+          batch.set(
+            db.collection('users').doc(currentUser.uid)
+              .collection('recipeOverrides').doc(recipe.id),
+            {
+              'translations.en': firebase.firestore.FieldValue.delete(),
+              updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            },
+            { merge: true }
+          );
+        }
+        await batch.commit();
+        recipe.intelligence = recipe.intelligence || {};
+        recipe.intelligence.translations = recipe.intelligence.translations || {};
+        recipe.intelligence.translations.en = correction;
+        if (personal?.translations) {
+          const translations = { ...personal.translations };
+          delete translations.en;
+          personalRecipeOverrides.set(recipe.id, { ...personal, translations });
+        }
+      } else {
+        await db.collection('users').doc(currentUser.uid)
+          .collection('recipeOverrides').doc(recipe.id).set({
+            translations: { en: correction },
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+        const existing = personalRecipeOverrides.get(recipe.id) || {};
+        personalRecipeOverrides.set(recipe.id, {
+          ...existing,
+          translations: {
+            ...(existing.translations || {}),
+            en: correction
+          }
+        });
+      }
+      activeTranslationByRecipe.set(recipe.id, correction);
+      closeTranslationEditModal();
+      await showRecipeLanguage(recipe.id, 'en');
+      showToast(saveCanonical ? 'התיקון נשמר לכל מי שרואה את המתכון' : 'התיקון האישי נשמר', 'success');
+    } catch (error) {
+      console.error('Translation correction save failed:', error);
+      showToast('לא הצלחנו לשמור את התיקון', 'error');
+    } finally {
+      translationEditSave.disabled = false;
+      textNode.hidden = false;
+      loadingNode.hidden = true;
     }
   }
 
@@ -3679,6 +3950,15 @@
           formData.content.uploadedImages = [storedImage.url];
         }
       }
+      if (formData.content?.text) {
+        formData.content.textMeta = {
+          source: importDraft ? 'human-approved' : 'human',
+          protected: true,
+          editedByUid: currentUser?.uid || '',
+          editedByUsername: userProfile?.username || '',
+          editedAt: new Date().toISOString()
+        };
+      }
 
       const newRecipe = {
         name: formData.name,
@@ -3855,6 +4135,7 @@
 
     try {
       const result = await callImporter('/extract', {
+        recipeId: recipe.id,
         url,
         socialText,
         screenshots: importScreenshots.map(item => item.dataUrl),
@@ -4655,6 +4936,8 @@
           closeEditTagsModal();
         } else if (transcriptionModal.classList.contains('active')) {
           closeTranscriptionModal();
+        } else if (translationEditModal.classList.contains('active')) {
+          closeTranslationEditModal();
         } else if (deleteModal.classList.contains('active')) {
           deleteModal.classList.remove('active');
         } else if (addModal.classList.contains('active')) {
@@ -4692,6 +4975,12 @@
         openEditCategoryModal();
       } else if (action === 'extract-recipe') {
         extractRecipeFromUrl();
+      } else if (action === 'apply-extraction-candidate') {
+        applyExtractionCandidate();
+      } else if (action === 'dismiss-extraction-candidate') {
+        dismissExtractionCandidate();
+      } else if (action === 'edit-translation') {
+        openTranslationEditModal();
       } else if (action === 'toggle-cooking') {
         toggleCookingRecipe(btn.dataset.recipeId);
       } else if (action === 'share-recipe') {
@@ -4780,6 +5069,13 @@
 
     transcriptionModal.addEventListener('click', (e) => {
       if (e.target === transcriptionModal) closeTranscriptionModal();
+    });
+
+    translationEditClose.addEventListener('click', closeTranslationEditModal);
+    translationEditCancel.addEventListener('click', closeTranslationEditModal);
+    translationEditSave.addEventListener('click', saveTranslationCorrection);
+    translationEditModal.addEventListener('click', (e) => {
+      if (e.target === translationEditModal) closeTranslationEditModal();
     });
 
     // Edit tags modal
@@ -4976,13 +5272,27 @@
     saveBtn.disabled = true;
 
     try {
-      // Update in Firestore (use content.text as the unified field)
+      const batch = db.batch();
+      addRecipeRevisionToBatch(batch, recipe, 'recipe-text', {
+        text: recipeSourceText(recipe),
+        textMeta: recipe.content?.textMeta || null
+      });
+      const textMeta = {
+        source: 'human',
+        protected: true,
+        editedByUid: currentUser.uid,
+        editedByUsername: userProfile?.username || '',
+        editedAt: new Date().toISOString()
+      };
+      batch.update(db.collection('recipes').doc(currentRecipeId), {
+        'content.text': text,
+        'content.textMeta': textMeta
+      });
+      await batch.commit();
+
       if (!recipe.content) recipe.content = {};
       recipe.content.text = text;
-
-      await db.collection('recipes').doc(currentRecipeId).update({
-        'content.text': text
-      });
+      recipe.content.textMeta = textMeta;
 
       updateRecipesCache(); // Sync cache with Firestore
       showToast('הטקסט נשמר בהצלחה!', 'success');
@@ -4998,6 +5308,84 @@
     btnText.style.display = 'inline';
     btnLoading.style.display = 'none';
     saveBtn.disabled = false;
+  }
+
+  async function applyExtractionCandidate() {
+    const recipe = recipes.find(item => item.id === currentRecipeId);
+    const candidate = recipe?.intelligence?.extractionCandidate;
+    if (!recipe || !candidate?.text || !canEditRecipeNow(recipe)) return;
+
+    try {
+      const recipeRef = db.collection('recipes').doc(recipe.id);
+      const revisionRef = recipeRef.collection('revisions').doc();
+      await db.runTransaction(async transaction => {
+        const snapshot = await transaction.get(recipeRef);
+        if (!snapshot.exists) throw new Error('missing-recipe');
+        const stored = snapshot.data();
+        const storedCandidate = stored.intelligence?.extractionCandidate;
+        if (!storedCandidate?.text || storedCandidate.text !== candidate.text) {
+          throw new Error('candidate-changed');
+        }
+        transaction.set(revisionRef, {
+          kind: 'recipe-text',
+          value: {
+            text: stored.content?.text || stored.content?.transcription || '',
+            textMeta: stored.content?.textMeta || null
+          },
+          editorUid: currentUser.uid,
+          editorEmail: currentUser.email || '',
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        transaction.update(recipeRef, {
+          'content.text': storedCandidate.text,
+          'content.textMeta': {
+            source: 'human-approved',
+            protected: true,
+            artifactKey: storedCandidate.artifactKey || '',
+            pipelineVersion: storedCandidate.pipelineVersion || 'extraction-v1',
+            editedByUid: currentUser.uid,
+            editedByUsername: userProfile?.username || '',
+            editedAt: firebase.firestore.FieldValue.serverTimestamp()
+          },
+          'intelligence.extractionCandidate': firebase.firestore.FieldValue.delete()
+        });
+      });
+      recipe.content = recipe.content || {};
+      recipe.content.text = candidate.text;
+      recipe.content.textMeta = {
+        source: 'human-approved',
+        protected: true,
+        artifactKey: candidate.artifactKey || '',
+        editedByUid: currentUser.uid
+      };
+      delete recipe.intelligence.extractionCandidate;
+      openRecipe(recipe.id);
+      showToast('החילוץ החדש אושר ונשמר. הפעלות עתידיות לא יחליפו אותו.', 'success');
+    } catch (error) {
+      console.error('Extraction candidate apply failed:', error);
+      showToast(
+        error.message === 'candidate-changed'
+          ? 'נוצרה בינתיים הצעה חדשה. פתחו מחדש כדי לבדוק אותה.'
+          : 'לא הצלחנו לשמור את החילוץ',
+        'error'
+      );
+    }
+  }
+
+  async function dismissExtractionCandidate() {
+    const recipe = recipes.find(item => item.id === currentRecipeId);
+    if (!recipe || !canEditRecipeNow(recipe)) return;
+    try {
+      await db.collection('recipes').doc(recipe.id).update({
+        'intelligence.extractionCandidate': firebase.firestore.FieldValue.delete()
+      });
+      if (recipe.intelligence) delete recipe.intelligence.extractionCandidate;
+      openRecipe(recipe.id);
+      showToast('הטקסט השמור נשאר ללא שינוי', 'success');
+    } catch (error) {
+      console.error('Extraction candidate dismiss failed:', error);
+      showToast('לא הצלחנו לסגור את ההצעה', 'error');
+    }
   }
 
   // Edit tags modal functions
@@ -5112,16 +5500,54 @@
       const recipeText = result.draft?.recipeText?.trim();
 
       if (recipeText && recipeText.length > 50) {
-        // This action intentionally updates text only. Existing tags are preserved exactly.
-        if (!recipe.content) recipe.content = {};
-        recipe.content.text = recipeText;
-
-        await db.collection('recipes').doc(currentRecipeId).update({
-          'content.text': recipeText
+        const recipeRef = db.collection('recipes').doc(currentRecipeId);
+        const candidate = {
+          text: recipeText,
+          artifactKey: result.artifactKey || '',
+          pipelineVersion: result.pipelineVersion || 'extraction-v1',
+          generatedByUid: currentUser.uid,
+          generatedAt: new Date().toISOString()
+        };
+        const outcome = await db.runTransaction(async transaction => {
+          const snapshot = await transaction.get(recipeRef);
+          if (!snapshot.exists) throw new Error('המתכון כבר לא קיים');
+          const stored = snapshot.data();
+          const storedText = stored.content?.text || stored.content?.transcription || '';
+          if (storedText.trim()) {
+            transaction.update(recipeRef, {
+              'intelligence.extractionCandidate': candidate
+            });
+            return 'candidate';
+          }
+          transaction.update(recipeRef, {
+            'content.text': recipeText,
+            'content.textMeta': {
+              source: 'generated',
+              protected: false,
+              artifactKey: result.artifactKey || '',
+              pipelineVersion: result.pipelineVersion || 'extraction-v1',
+              generatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            }
+          });
+          return 'applied-empty';
         });
 
-        updateRecipesCache(); // Sync cache with Firestore
-        showToast('המתכון חולץ בהצלחה!', 'success');
+        if (!recipe.content) recipe.content = {};
+        if (outcome === 'candidate') {
+          recipe.intelligence = recipe.intelligence || {};
+          recipe.intelligence.extractionCandidate = candidate;
+          showToast('החילוץ החדש מוכן לבדיקה. הטקסט השמור לא השתנה.', 'success');
+        } else {
+          recipe.content.text = recipeText;
+          recipe.content.textMeta = {
+            source: 'generated',
+            protected: false,
+            artifactKey: result.artifactKey || '',
+            pipelineVersion: result.pipelineVersion || 'extraction-v1'
+          };
+          showToast('המתכון חולץ ונשמר', 'success');
+        }
+        updateRecipesCache();
         openRecipe(currentRecipeId); // Refresh modal
       } else {
         throw new Error(result.warning || 'לא נמצא מספיק טקסט. אפשר להוסיף אותו ידנית.');
