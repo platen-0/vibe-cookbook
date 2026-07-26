@@ -6,11 +6,11 @@
   "workers_dev": true,
   "vars": {
     "FIREBASE_PROJECT_ID": "vibe-cookbook",
-    "ALLOWED_ORIGINS": "https://platen-0.github.io",
+    "ALLOWED_ORIGINS": "https://levashel.com,https://www.levashel.com,https://platen-0.github.io",
     "AUTHORIZED_EMAILS": "taladani@gmail.com,eliavschreiber@gmail.com,dschreiber@gmail.com,gidonschreiber@gmail.com,egorlin@gmail.com",
     "GITHUB_REPOSITORY": "platen-0/vibe-cookbook",
     "GITHUB_BRANCH": "main",
-    "IMAGE_PUBLIC_BASE": "https://platen-0.github.io/vibe-cookbook/",
+    "IMAGE_PUBLIC_BASE": "https://levashel.com/",
     "OPENAI_MODEL": "gpt-5.6-terra"
   },
   "kv_namespaces": [

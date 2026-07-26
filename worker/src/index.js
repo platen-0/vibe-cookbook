@@ -890,7 +890,7 @@ export async function storeRecipeImage(input, user, env, workerOrigin = '') {
   });
   const version = result?.content?.sha?.slice(0, 12) || Date.now().toString(36);
   const publicBase = (env.IMAGE_PUBLIC_BASE ||
-    'https://platen-0.github.io/vibe-cookbook/').replace(/\/?$/, '/');
+    'https://levashel.com/').replace(/\/?$/, '/');
 
   return {
     path,
@@ -1604,7 +1604,8 @@ async function getFirebasePublicKeys() {
 
 function getCorsHeaders(origin, env) {
   const allowed = new Set(
-    (env.ALLOWED_ORIGINS || 'https://platen-0.github.io')
+    (env.ALLOWED_ORIGINS ||
+      'https://levashel.com,https://www.levashel.com,https://platen-0.github.io')
       .split(',')
       .map((value) => value.trim())
       .filter(Boolean)

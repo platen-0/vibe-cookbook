@@ -4,7 +4,7 @@ Hebrew recipe cookbook web app with recipes from Instagram, YouTube, Facebook, a
 
 ## Links
 
-- **Live App**: https://platen-0.github.io/vibe-cookbook/
+- **Live App**: https://levashel.com/
 - **GitHub Repo**: https://github.com/platen-0/vibe-cookbook
 - **Firebase Console**: https://console.firebase.google.com/project/vibe-cookbook
 

@@ -502,7 +502,7 @@ const report = {
   createdAt: new Date().toISOString(),
   backupPath,
   imageRoot: IMAGE_ROOT,
-  publicBase: 'https://platen-0.github.io/vibe-cookbook/',
+  publicBase: 'https://levashel.com/',
   summary,
   entries
 };

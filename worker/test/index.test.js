@@ -15,6 +15,28 @@ import {
   findRecipeInJsonLd,
   storeRecipeImage
 } from '../src/index.js';
+import importerWorker from '../src/index.js';
+
+test('allows the custom domain and legacy GitHub origin', async () => {
+  const env = {
+    ALLOWED_ORIGINS:
+      'https://levashel.com,https://www.levashel.com,https://platen-0.github.io'
+  };
+  for (const origin of [
+    'https://levashel.com',
+    'https://www.levashel.com',
+    'https://platen-0.github.io'
+  ]) {
+    const response = await importerWorker.fetch(
+      new Request('https://worker.example/health', {
+        headers: { Origin: origin }
+      }),
+      env
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), origin);
+  }
+});
 
 test('extracts a structured recipe and its preferred image', () => {
   const html = `
