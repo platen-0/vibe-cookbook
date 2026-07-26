@@ -81,6 +81,7 @@
   let recipeAccess = new Map();
   let hiddenDemoRecipeIds = new Set();
   let pendingInvitations = [];
+  let pendingAccessRequests = [];
   let privateImageUrls = new Map();
   let privateImageRefreshKey = '';
   let v2Unsubscribers = [];
@@ -271,9 +272,9 @@
       publicIntroBody: 'אחרי ההתחברות מחכה לך מטבח אישי, ואפשר להצטרף למטבחים משותפים עם משפחה וחברים.',
       publicIntroAction: 'פתיחת המטבח שלי',
       publicIntroSteps: [
-        'שומרים מקישור, תמונה או טקסט',
-        'מבשלים כמה מתכונים יחד',
-        'חולקים מטבח, לא סיסמה'
+        'שמירת מתכון מקישור, תמונה או טקסט',
+        'ממשק נוח לבישול מספר מתכונים במקביל',
+        'שיתוף ספרי מתכונים עם חברים ומשפחה'
       ]
     },
     en: {
@@ -423,6 +424,8 @@
   const onboardingSubmit = document.getElementById('onboarding-submit');
   const createKitchenModal = document.getElementById('create-kitchen-modal');
   const createKitchenForm = document.getElementById('create-kitchen-form');
+  const requestKitchenAccessModal = document.getElementById('request-kitchen-access-modal');
+  const requestKitchenAccessForm = document.getElementById('request-kitchen-access-form');
   const inviteKitchenModal = document.getElementById('invite-kitchen-modal');
   const inviteKitchenForm = document.getElementById('invite-kitchen-form');
   const shareRecipeModal = document.getElementById('share-recipe-modal');
@@ -688,6 +691,7 @@
     recipeAccessIds = new Set();
     recipeAccess = new Map();
     pendingInvitations = [];
+    pendingAccessRequests = [];
     hiddenDemoRecipeIds = new Set();
     personalRecipeOverrides = new Map();
     activeTranslationByRecipe = new Map();
@@ -1031,9 +1035,20 @@
           .onSnapshot(
             snapshot => updateInvitations('email', snapshot),
             handleSubscriptionError('Email invitations')
-          )
+        )
       );
     }
+
+    v2Unsubscribers.push(
+      db.collection('kitchenAccessRequests')
+        .where('recipientUids', 'array-contains', currentUser.uid)
+        .onSnapshot(snapshot => {
+          pendingAccessRequests = snapshot.docs
+            .map(doc => ({ id: doc.id, ...doc.data() }))
+            .filter(request => request.status === 'pending');
+          renderV2Chrome();
+        }, handleSubscriptionError('Kitchen access requests'))
+    );
   }
 
   async function refreshPrivateImageUrls() {
@@ -1125,6 +1140,47 @@
         : '<div class="account-kitchen-item"><div class="account-kitchen-copy"><strong>המטבח האישי</strong><span>מכינים אותו עכשיו…</span></div></div>';
     }
 
+    const accessRequestSection = document.getElementById('account-access-requests-section');
+    const accessRequestList = document.getElementById('account-access-request-list');
+    if (accessRequestSection && accessRequestList) {
+      const managedSharedKitchens = userKitchens.filter(kitchen =>
+        kitchen.type === 'shared' &&
+        ['owner', 'admin'].includes(kitchenRoles[kitchen.id])
+      );
+      accessRequestSection.hidden = pendingAccessRequests.length === 0;
+      accessRequestList.innerHTML = pendingAccessRequests.map(request => {
+        const fixedKitchen = request.targetKitchenId
+          ? managedSharedKitchens.find(kitchen => kitchen.id === request.targetKitchenId)
+          : null;
+        const kitchenOptions = fixedKitchen
+          ? `<option value="${escapeHtml(fixedKitchen.id)}">${escapeHtml(fixedKitchen.name)}</option>`
+          : managedSharedKitchens.map(kitchen => `
+              <option value="${escapeHtml(kitchen.id)}">${escapeHtml(kitchen.name)}</option>
+            `).join('');
+        const requesterLabel = request.requesterUsername
+          ? `@${request.requesterUsername}`
+          : (request.requesterEmail || request.requesterName || 'משתמש/ת');
+        return `
+          <div class="account-invitation-item account-access-request-item" data-request-id="${escapeHtml(request.id)}">
+            <div class="account-invitation-copy">
+              <strong>${escapeHtml(request.requesterName || requesterLabel)} מבקש/ת להצטרף</strong>
+              <span>${escapeHtml(requesterLabel)}${request.targetKitchenName ? ` · ${escapeHtml(request.targetKitchenName)}` : ''}</span>
+              <label class="access-request-kitchen-choice">
+                <span>הזמנה אל</span>
+                <select data-access-kitchen ${kitchenOptions ? '' : 'disabled'}>
+                  ${kitchenOptions || '<option value="">אין מטבח משותף בניהולך</option>'}
+                </select>
+              </label>
+            </div>
+            <div class="account-invitation-actions">
+              <button type="button" data-action="decline-access-request" data-request-id="${escapeHtml(request.id)}">דחייה</button>
+              <button type="button" data-action="approve-access-request" data-request-id="${escapeHtml(request.id)}" ${kitchenOptions ? '' : 'disabled'}>אישור</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
     const invitationSection = document.getElementById('account-invitations-section');
     const invitationList = document.getElementById('account-invitation-list');
     if (invitationSection && invitationList) {
@@ -1195,24 +1251,233 @@
       showToast('צריך להוסיף שם למטבח', 'error');
       return;
     }
+    const nameNormalized = name.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+    const directoryKey = await sha256Text(nameNormalized);
     const ref = db.collection('kitchens').doc();
+    const directoryRef = db.collection('kitchenDirectory').doc(directoryKey);
     try {
-      await ref.set({
-        name,
-        nameNormalized: name.normalize('NFKC').toLocaleLowerCase(),
-        type: 'shared',
-        ownerUid: currentUser.uid,
-        memberIds: [currentUser.uid],
-        memberRoles: { [currentUser.uid]: 'owner' },
-        createdBy: currentUser.uid,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      await db.runTransaction(async transaction => {
+        const directorySnapshot = await transaction.get(directoryRef);
+        if (directorySnapshot.exists) throw new Error('kitchen-name-taken');
+        const now = firebase.firestore.FieldValue.serverTimestamp();
+        transaction.set(ref, {
+          name,
+          nameNormalized,
+          directoryKey,
+          type: 'shared',
+          ownerUid: currentUser.uid,
+          memberIds: [currentUser.uid],
+          memberRoles: { [currentUser.uid]: 'owner' },
+          createdBy: currentUser.uid,
+          createdAt: now,
+          updatedAt: now
+        });
+        transaction.set(directoryRef, {
+          kitchenId: ref.id,
+          kitchenName: name,
+          normalizedName: nameNormalized,
+          ownerUid: currentUser.uid,
+          adminUids: [currentUser.uid],
+          createdAt: now,
+          updatedAt: now
+        });
       });
       closeCreateKitchenModal();
       showToast(`המטבח ${name} נוצר`, 'success');
     } catch (error) {
       console.error('Kitchen creation failed:', error);
-      showToast('לא הצלחנו ליצור את המטבח', 'error');
+      showToast(
+        error.message === 'kitchen-name-taken'
+          ? 'כבר קיים מטבח בשם הזה — נסו שם מעט שונה'
+          : 'לא הצלחנו ליצור את המטבח',
+        'error'
+      );
+    }
+  }
+
+  function openRequestKitchenAccessModal() {
+    requestKitchenAccessForm.reset();
+    requestKitchenAccessModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() => {
+      document.getElementById('request-kitchen-access-target').focus();
+    });
+  }
+
+  function closeRequestKitchenAccessModal() {
+    requestKitchenAccessModal.classList.remove('active');
+    if (!document.querySelector('.modal.active')) document.body.style.overflow = '';
+  }
+
+  async function resolveAccessRequestTarget(rawTarget) {
+    const target = String(rawTarget || '').trim();
+    if (!target) throw new Error('missing-target');
+
+    const normalizedKitchenName = target
+      .normalize('NFKC')
+      .trim()
+      .replace(/\s+/g, ' ')
+      .toLocaleLowerCase();
+    const directoryKey = await sha256Text(normalizedKitchenName);
+    const kitchenDirectory = await db.collection('kitchenDirectory').doc(directoryKey).get();
+    if (kitchenDirectory.exists) {
+      const directory = kitchenDirectory.data();
+      if (
+        (directory.adminUids || []).includes(currentUser.uid) ||
+        userKitchens.some(kitchen => kitchen.id === directory.kitchenId)
+      ) {
+        throw new Error('self-request');
+      }
+      return {
+        targetKind: 'kitchen',
+        targetKitchenId: directory.kitchenId,
+        targetKitchenName: directory.kitchenName,
+        directoryKey,
+        recipientUids: directory.adminUids || []
+      };
+    }
+
+    const userTarget = await resolveInviteTarget(target);
+    if (!userTarget.targetUid) throw new Error('user-not-found');
+    if (userTarget.targetUid === currentUser.uid) throw new Error('self-request');
+    return {
+      targetKind: 'user',
+      targetUid: userTarget.targetUid,
+      targetUsername: userTarget.targetUsername || null,
+      targetEmail: userTarget.targetEmail || null,
+      recipientUids: [userTarget.targetUid]
+    };
+  }
+
+  async function requestKitchenAccess(event) {
+    event.preventDefault();
+    if (!currentUser || !userProfile?.onboardingComplete) return;
+    const submit = document.getElementById('request-kitchen-access-submit');
+    submit.disabled = true;
+    try {
+      const target = await resolveAccessRequestTarget(
+        document.getElementById('request-kitchen-access-target').value
+      );
+      if (!target.recipientUids.length) throw new Error('no-admins');
+      const requestIdentity = target.targetKind === 'kitchen'
+        ? `kitchen:${target.directoryKey}`
+        : `user:${target.targetUid}`;
+      const requestId = await sha256Text(`${currentUser.uid}:${requestIdentity}`);
+      const requestRef = db.collection('kitchenAccessRequests').doc(requestId);
+      const existing = await requestRef.get();
+      if (existing.exists && existing.data().status === 'pending') {
+        throw new Error('already-pending');
+      }
+      if (existing.exists && existing.data().status === 'approved') {
+        throw new Error('already-approved');
+      }
+      const now = firebase.firestore.FieldValue.serverTimestamp();
+      const payload = {
+        ...target,
+        requesterUid: currentUser.uid,
+        requesterName: userProfile.firstName || currentUser.displayName || '',
+        requesterUsername: userProfile.username || '',
+        requesterEmail: String(currentUser.email || '').trim().toLowerCase(),
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now
+      };
+      if (existing.exists) {
+        await requestRef.update({
+          ...payload,
+          resolverUid: firebase.firestore.FieldValue.delete(),
+          resolvedAt: firebase.firestore.FieldValue.delete(),
+          resolvedKitchenId: firebase.firestore.FieldValue.delete(),
+          invitationId: firebase.firestore.FieldValue.delete()
+        });
+      } else {
+        await requestRef.set(payload);
+      }
+      closeRequestKitchenAccessModal();
+      showToast('בקשת הגישה נשלחה', 'success');
+    } catch (error) {
+      console.error('Kitchen access request failed:', error);
+      const messages = {
+        'missing-target': 'צריך להזין שם מטבח, שם משתמש או אימייל',
+        'user-not-found': 'לא מצאנו מטבח או משתמש בהתאמה מדויקת',
+        'self-request': 'כבר יש לך גישה ליעד הזה',
+        'no-admins': 'לא מצאנו מנהל שאפשר לשלוח אליו את הבקשה',
+        'already-pending': 'כבר מחכה בקשת גישה שלך',
+        'already-approved': 'הבקשה הזו כבר אושרה'
+      };
+      showToast(messages[error.message] || 'לא הצלחנו לשלוח את הבקשה', 'error');
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  async function approveKitchenAccessRequest(requestId, kitchenId) {
+    const accessRequest = pendingAccessRequests.find(item => item.id === requestId);
+    const kitchen = userKitchens.find(item => item.id === kitchenId);
+    if (
+      !accessRequest ||
+      !kitchen ||
+      kitchen.type !== 'shared' ||
+      !['owner', 'admin'].includes(kitchenRoles[kitchen.id])
+    ) {
+      showToast('אין הרשאה לאשר את הבקשה למטבח הזה', 'error');
+      return;
+    }
+    if (
+      accessRequest.targetKitchenId &&
+      accessRequest.targetKitchenId !== kitchen.id
+    ) {
+      showToast('הבקשה נשלחה למטבח אחר', 'error');
+      return;
+    }
+
+    try {
+      const invitationRef = db.collection('invitations').doc();
+      const requestRef = db.collection('kitchenAccessRequests').doc(requestId);
+      const batch = db.batch();
+      batch.set(invitationRef, {
+        type: 'kitchen',
+        title: `הזמנה למטבח ${kitchen.name}`,
+        kitchenId: kitchen.id,
+        kitchenName: kitchen.name,
+        role: 'member',
+        targetUid: accessRequest.requesterUid,
+        targetEmail: accessRequest.requesterEmail || null,
+        targetUsername: accessRequest.requesterUsername || null,
+        inviterUid: currentUser.uid,
+        inviterUsername: userProfile.username,
+        sourceAccessRequestId: requestId,
+        status: 'pending',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      batch.update(requestRef, {
+        status: 'approved',
+        resolverUid: currentUser.uid,
+        resolvedKitchenId: kitchen.id,
+        invitationId: invitationRef.id,
+        resolvedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      await batch.commit();
+      showToast('הבקשה אושרה וההזמנה נשלחה', 'success');
+    } catch (error) {
+      console.error('Kitchen access approval failed:', error);
+      showToast('לא הצלחנו לאשר את הבקשה', 'error');
+    }
+  }
+
+  async function declineKitchenAccessRequest(requestId) {
+    try {
+      await db.collection('kitchenAccessRequests').doc(requestId).update({
+        status: 'declined',
+        resolverUid: currentUser.uid,
+        resolvedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      showToast('בקשת הגישה נדחתה', 'info');
+    } catch (error) {
+      console.error('Kitchen access decline failed:', error);
+      showToast('לא הצלחנו לעדכן את הבקשה', 'error');
     }
   }
 
@@ -1565,6 +1830,17 @@
           });
         });
         const joinedKitchen = await kitchenRef.get();
+        if (
+          invitation.role === 'admin' &&
+          joinedKitchen.data()?.directoryKey
+        ) {
+          await db.collection('kitchenDirectory')
+            .doc(joinedKitchen.data().directoryKey)
+            .update({
+              adminUids: firebase.firestore.FieldValue.arrayUnion(currentUser.uid),
+              updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+        }
         await claimJoinedKitchenRecipes(
           joinedKitchen.data()?.recipeIds || [],
           invitation.kitchenId,
@@ -5200,6 +5476,17 @@
         if (e.target === createKitchenModal) closeCreateKitchenModal();
       });
 
+      document.getElementById('request-kitchen-access-btn')
+        .addEventListener('click', openRequestKitchenAccessModal);
+      requestKitchenAccessForm.addEventListener('submit', requestKitchenAccess);
+      document.getElementById('request-kitchen-access-close')
+        .addEventListener('click', closeRequestKitchenAccessModal);
+      document.getElementById('request-kitchen-access-cancel')
+        .addEventListener('click', closeRequestKitchenAccessModal);
+      requestKitchenAccessModal.addEventListener('click', (e) => {
+        if (e.target === requestKitchenAccessModal) closeRequestKitchenAccessModal();
+      });
+
       inviteKitchenForm.addEventListener('submit', inviteToKitchen);
       document.getElementById('invite-kitchen-close').addEventListener('click', closeInviteKitchenModal);
       document.getElementById('invite-kitchen-cancel').addEventListener('click', closeInviteKitchenModal);
@@ -5228,6 +5515,19 @@
           acceptInvitation(action.dataset.invitationId);
         } else if (action.dataset.action === 'decline-invitation') {
           declineInvitation(action.dataset.invitationId);
+        }
+      });
+
+      document.getElementById('account-access-request-list').addEventListener('click', (e) => {
+        const action = e.target.closest('[data-action]');
+        if (!action) return;
+        const requestId = action.dataset.requestId;
+        if (action.dataset.action === 'approve-access-request') {
+          const item = action.closest('[data-request-id]');
+          const kitchenId = item?.querySelector('[data-access-kitchen]')?.value;
+          approveKitchenAccessRequest(requestId, kitchenId);
+        } else if (action.dataset.action === 'decline-access-request') {
+          declineKitchenAccessRequest(requestId);
         }
       });
 

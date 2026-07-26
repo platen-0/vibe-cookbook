@@ -53,6 +53,8 @@ beforeEach(async () => {
       }),
       setDoc(doc(db, 'kitchens/schreiber'), {
         name: 'שרייבר',
+        nameNormalized: 'שרייבר',
+        directoryKey: 'schreiber-key',
         type: 'shared',
         ownerUid: 'tal',
         memberIds: ['tal', 'einav', 'admin', 'member'],
@@ -63,6 +65,13 @@ beforeEach(async () => {
           member: 'member'
         },
         recipeIds: ['shared_recipe']
+      }),
+      setDoc(doc(db, 'kitchenDirectory/schreiber-key'), {
+        kitchenId: 'schreiber',
+        kitchenName: 'שרייבר',
+        normalizedName: 'שרייבר',
+        ownerUid: 'tal',
+        adminUids: ['tal', 'admin']
       }),
       setDoc(doc(db, 'recipes/legacy'), {
         name: 'Legacy',
@@ -291,6 +300,79 @@ test('only kitchen admins can issue kitchen invitations', async () => {
     ...invitation,
     inviterUid: 'member'
   }));
+});
+
+test('shared kitchen names can be looked up exactly without exposing membership', async () => {
+  await assertSucceeds(getDoc(
+    doc(authed('outsider'), 'kitchenDirectory/schreiber-key')
+  ));
+
+  const db = authed('einav');
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'kitchens/einav-friends'), {
+    name: 'החברים של עינב',
+    nameNormalized: 'החברים של עינב',
+    directoryKey: 'einav-friends-key',
+    type: 'shared',
+    ownerUid: 'einav',
+    memberIds: ['einav'],
+    memberRoles: { einav: 'owner' }
+  });
+  batch.set(doc(db, 'kitchenDirectory/einav-friends-key'), {
+    kitchenId: 'einav-friends',
+    kitchenName: 'החברים של עינב',
+    normalizedName: 'החברים של עינב',
+    ownerUid: 'einav',
+    adminUids: ['einav']
+  });
+  await assertSucceeds(batch.commit());
+
+  await assertFails(setDoc(
+    doc(authed('outsider'), 'kitchenDirectory/forged'),
+    {
+      kitchenId: 'schreiber',
+      kitchenName: 'שרייבר',
+      normalizedName: 'שרייבר',
+      ownerUid: 'outsider',
+      adminUids: ['outsider']
+    }
+  ));
+});
+
+test('access requests can only be resolved by their kitchen recipients', async () => {
+  const request = {
+    targetKind: 'kitchen',
+    targetKitchenId: 'schreiber',
+    targetKitchenName: 'שרייבר',
+    directoryKey: 'schreiber-key',
+    recipientUids: ['tal', 'admin'],
+    requesterUid: 'outsider',
+    requesterName: 'Outsider',
+    requesterUsername: 'outsider',
+    requesterEmail: 'outsider@example.com',
+    status: 'pending'
+  };
+  await assertSucceeds(setDoc(
+    doc(authed('outsider'), 'kitchenAccessRequests/valid-request'),
+    request
+  ));
+  await assertFails(setDoc(
+    doc(authed('outsider'), 'kitchenAccessRequests/forged-request'),
+    { ...request, recipientUids: ['member'] }
+  ));
+  await assertFails(updateDoc(
+    doc(authed('member'), 'kitchenAccessRequests/valid-request'),
+    { status: 'approved', resolverUid: 'member' }
+  ));
+  await assertSucceeds(updateDoc(
+    doc(authed('admin'), 'kitchenAccessRequests/valid-request'),
+    {
+      status: 'approved',
+      resolverUid: 'admin',
+      resolvedKitchenId: 'schreiber',
+      invitationId: 'approved-invite'
+    }
+  ));
 });
 
 test('an invited user can atomically join with exactly the invited role', async () => {

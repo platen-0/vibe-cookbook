@@ -230,6 +230,29 @@ service cloud.firestore {
       allow delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
 
+    match /kitchenDirectory/{lookupKey} {
+      function validDirectoryCreate() {
+        let kitchen = getAfter(
+          /databases/$(database)/documents/kitchens/$(request.resource.data.kitchenId)
+        ).data;
+        return profileComplete() &&
+               kitchen.type == 'shared' &&
+               kitchen.ownerUid == request.auth.uid &&
+               request.resource.data.ownerUid == request.auth.uid &&
+               request.resource.data.kitchenName == kitchen.name &&
+               request.resource.data.normalizedName == kitchen.nameNormalized &&
+               request.resource.data.adminUids == [request.auth.uid];
+      }
+
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if validDirectoryCreate();
+      allow update: if isKitchenAdmin(resource.data.kitchenId) &&
+                       request.resource.data.diff(resource.data)
+                         .affectedKeys().hasOnly(['adminUids', 'updatedAt']);
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
     match /kitchens/{kitchenId} {
       function validNewKitchen() {
         return profileComplete() &&
@@ -324,6 +347,83 @@ service cloud.firestore {
                       resource.data.inviterUid == request.auth.uid &&
                       request.resource.data.status == 'cancelled'
                     );
+      allow delete: if false;
+    }
+
+    match /kitchenAccessRequests/{accessRequestId} {
+      function validKitchenRequestTarget() {
+        let directory = get(
+          /databases/$(database)/documents/kitchenDirectory/$(request.resource.data.directoryKey)
+        ).data;
+        return request.resource.data.targetKind == 'kitchen' &&
+               request.resource.data.targetKitchenId == directory.kitchenId &&
+               request.resource.data.targetKitchenName == directory.kitchenName &&
+               request.resource.data.recipientUids == directory.adminUids;
+      }
+
+      function validUserRequestTarget() {
+        return request.resource.data.targetKind == 'user' &&
+               request.resource.data.targetUid != request.auth.uid &&
+               request.resource.data.recipientUids ==
+                 [request.resource.data.targetUid];
+      }
+
+      function validNewAccessRequest() {
+        return profileComplete() &&
+               request.resource.data.requesterUid == request.auth.uid &&
+               request.resource.data.status == 'pending' &&
+               request.resource.data.recipientUids is list &&
+               request.resource.data.recipientUids.size() > 0 &&
+               request.resource.data.recipientUids.size() <= 20 &&
+               !(request.auth.uid in request.resource.data.recipientUids) &&
+               (
+                 validKitchenRequestTarget() ||
+                 validUserRequestTarget()
+               );
+      }
+
+      function recipientMayResolve() {
+        return signedIn() &&
+               request.auth.uid in resource.data.recipientUids &&
+               resource.data.status == 'pending' &&
+               request.resource.data.status in ['approved', 'declined'] &&
+               request.resource.data.resolverUid == request.auth.uid &&
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'status',
+                 'resolverUid',
+                 'resolvedAt',
+                 'resolvedKitchenId',
+                 'invitationId',
+                 'updatedAt'
+               ]);
+      }
+
+      function requesterMayRetry() {
+        return signedIn() &&
+               resource.data.requesterUid == request.auth.uid &&
+               resource.data.status == 'declined' &&
+               request.resource.data.status == 'pending' &&
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'status',
+                 'requesterName',
+                 'requesterUsername',
+                 'requesterEmail',
+                 'createdAt',
+                 'updatedAt',
+                 'resolverUid',
+                 'resolvedAt',
+                 'resolvedKitchenId',
+                 'invitationId'
+               ]);
+      }
+
+      allow get, list: if signedIn() &&
+                         (
+                           resource.data.requesterUid == request.auth.uid ||
+                           request.auth.uid in resource.data.recipientUids
+                         );
+      allow create: if validNewAccessRequest();
+      allow update: if recipientMayResolve() || requesterMayRetry();
       allow delete: if false;
     }
 

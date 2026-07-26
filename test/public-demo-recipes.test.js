@@ -39,9 +39,32 @@ test('every demo recipe uses a generated project image', () => {
 
 test('the signed-out surface introduces the demo catalogue and onboarding action', () => {
   const html = readFileSync('index.html', 'utf8');
+  const source = readFileSync('app.js', 'utf8');
+  const styles = readFileSync('styles.css', 'utf8');
   assert.match(html, /id="public-intro"/);
   assert.match(html, /id="public-intro-signin"/);
   assert.match(html, /חמישה מתכונים להתחלה/);
+  assert.match(html, /שמירת מתכון מקישור, תמונה או טקסט/);
+  assert.match(html, /ממשק נוח לבישול מספר מתכונים במקביל/);
+  assert.match(html, /שיתוף ספרי מתכונים עם חברים ומשפחה/);
+  assert.match(source, /ממשק נוח לבישול מספר מתכונים במקביל/);
+  assert.match(
+    styles,
+    /\.public-intro h2\s*\{[\s\S]*?var\(--font-body\)/
+  );
+});
+
+test('signed-in users can request kitchen access for admin approval', () => {
+  const html = readFileSync('index.html', 'utf8');
+  const source = readFileSync('app.js', 'utf8');
+  const rules = readFileSync('firestore.rules', 'utf8');
+  assert.match(html, /id="request-kitchen-access-form"/);
+  assert.match(html, /id="account-access-requests-section"/);
+  assert.match(source, /collection\('kitchenAccessRequests'\)/);
+  assert.match(source, /approveKitchenAccessRequest/);
+  assert.match(source, /sourceAccessRequestId/);
+  assert.match(rules, /match \/kitchenAccessRequests\/\{accessRequestId\}/);
+  assert.match(rules, /recipientMayResolve/);
 });
 
 test('demo recipes are clearly labeled on their cards', () => {

@@ -46,7 +46,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
   <!-- Firebase Storage removed - requires paid plan -->
 
-  <link rel="stylesheet" href="styles.css?v=78492ef4">
+  <link rel="stylesheet" href="styles.css?v=69af660f">
 </head>
 <body>
   <div class="app-container">
@@ -93,9 +93,9 @@
         <p>אחרי ההתחברות מחכה לך מטבח אישי, ואפשר להצטרף למטבחים משותפים עם משפחה וחברים.</p>
       </div>
       <div class="public-intro-steps" aria-label="מה אפשר לעשות ב־Levashel">
-        <span><b>01</b> שומרים מקישור, תמונה או טקסט</span>
-        <span><b>02</b> מבשלים כמה מתכונים יחד</span>
-        <span><b>03</b> חולקים מטבח, לא סיסמה</span>
+        <span><b>01</b> שמירת מתכון מקישור, תמונה או טקסט</span>
+        <span><b>02</b> ממשק נוח לבישול מספר מתכונים במקביל</span>
+        <span><b>03</b> שיתוף ספרי מתכונים עם חברים ומשפחה</span>
       </div>
       <button class="public-intro-action" id="public-intro-signin" type="button">
         פתיחת המטבח שלי
@@ -588,6 +588,28 @@
               <div class="account-kitchen-list" id="account-kitchen-list"></div>
             </section>
 
+            <section class="account-section account-access-section">
+              <button type="button" class="account-access-entry" id="request-kitchen-access-btn">
+                <span>
+                  <strong>בקשת גישה למטבח</strong>
+                  <small>לפי שם המטבח, שם משתמש או אימייל</small>
+                </span>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 12h14M13 6l6 6-6 6"/>
+                </svg>
+              </button>
+            </section>
+
+            <section class="account-section" id="account-access-requests-section" hidden>
+              <div class="account-section-heading">
+                <div>
+                  <h3>בקשות גישה</h3>
+                  <p>בקשות שמחכות לאישור במטבחים שבניהולך.</p>
+                </div>
+              </div>
+              <div class="account-access-request-list" id="account-access-request-list"></div>
+            </section>
+
             <section class="account-section" id="account-invitations-section" hidden>
               <div class="account-section-heading">
                 <div>
@@ -661,6 +683,29 @@
             <div class="form-actions">
               <button type="button" class="btn btn-secondary" id="create-kitchen-cancel">ביטול</button>
               <button type="submit" class="btn btn-primary">יצירת מטבח</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Request access to a kitchen -->
+    <div class="modal" id="request-kitchen-access-modal" aria-labelledby="request-kitchen-access-title">
+      <div class="modal-content compact-modal-content">
+        <button class="modal-close" id="request-kitchen-access-close">&times;</button>
+        <div class="modal-body">
+          <span class="account-eyebrow">מצטרפים למטבח</span>
+          <h2 class="modal-title" id="request-kitchen-access-title">בקשת גישה</h2>
+          <p class="modal-subtitle">אפשר לחפש בהתאמה מדויקת לפי שם מטבח, שם משתמש או כתובת אימייל. הבקשה תישלח לבעלים או למנהלים לאישור.</p>
+          <form id="request-kitchen-access-form">
+            <div class="form-group">
+              <label for="request-kitchen-access-target">מטבח או בעלים</label>
+              <input type="text" id="request-kitchen-access-target" dir="auto" autocomplete="off" placeholder="שרייבר, @username או name@gmail.com">
+              <p class="field-hint">מטבחים פרטיים אינם מופיעים בחיפוש פתוח.</p>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn btn-secondary" id="request-kitchen-access-cancel">ביטול</button>
+              <button type="submit" class="btn btn-primary" id="request-kitchen-access-submit">שליחת בקשה</button>
             </div>
           </form>
         </div>
@@ -878,6 +923,6 @@
   <script src="import-config.js?v=dc2de91e"></script>
   <script src="cooking-workspace-core.js?v=0ae85342"></script>
   <script src="cookbook-v2-core.js?v=e4840a89"></script>
-  <script src="app.js?v=f9ffbc84"></script>
+  <script src="app.js?v=e75db531"></script>
 </body>
 </html>
