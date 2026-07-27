@@ -239,6 +239,7 @@ function kitchenAccessWrite(uid, recipeId, now) {
         active: true,
         allowCopy: true,
         grantKind: 'kitchen',
+        kitchenId: 'schreiber',
         updatedAt: now
       })
     },
@@ -248,15 +249,10 @@ function kitchenAccessWrite(uid, recipeId, now) {
         'active',
         'allowCopy',
         'grantKind',
+        'kitchenId',
         'updatedAt'
       ]
-    },
-    updateTransforms: [{
-      fieldPath: 'kitchenIds',
-      appendMissingElements: {
-        values: [{ stringValue: 'schreiber' }]
-      }
-    }]
+    }
   };
 }
 
@@ -368,21 +364,27 @@ for (const id of existingDemoIds) {
 }
 
 const now = new Date().toISOString();
-const accessWrites = schreiberMemberIds.flatMap(uid =>
-  familyRecipes.map(recipe => kitchenAccessWrite(uid, recipe.id, now))
-);
-let existingActiveAccessGrants = 0;
-let missingActiveAccessGrants = 0;
+const accessWrites = [];
+let existingCanonicalAccessGrants = 0;
+let missingOrNoncanonicalAccessGrants = 0;
 for (const uid of schreiberMemberIds) {
   const grants = await fetchCollection(`users/${uid}/recipeAccess`);
-  const activeIds = new Set(
-    grants
-      .filter(grant => grant.data.active !== false)
-      .map(grant => grant.id)
-  );
+  const grantsById = new Map(grants.map(grant => [grant.id, grant.data]));
   for (const recipe of familyRecipes) {
-    if (activeIds.has(recipe.id)) existingActiveAccessGrants += 1;
-    else missingActiveAccessGrants += 1;
+    const grant = grantsById.get(recipe.id);
+    const isCanonical = Boolean(
+      grant &&
+      grant.recipeId === recipe.id &&
+      grant.active === true &&
+      grant.grantKind === 'kitchen' &&
+      grant.kitchenId === 'schreiber'
+    );
+    if (isCanonical) {
+      existingCanonicalAccessGrants += 1;
+    } else {
+      missingOrNoncanonicalAccessGrants += 1;
+      accessWrites.push(kitchenAccessWrite(uid, recipe.id, now));
+    }
   }
 }
 const demoWrites = [];
@@ -396,11 +398,18 @@ for (const demo of demoRecipes) {
   assert.equal(existing.data.visibility, 'public', `${demo.id} is not public`);
   assert.equal(existing.data.name, demo.name, `${demo.id} has unexpected content`);
 }
-const kitchenWrite = patchWrite(
-  'kitchens/schreiber',
-  { recipeIds: familyRecipes.map(recipe => recipe.id).sort() },
-  schreiber
+const expectedKitchenRecipeIds = familyRecipes.map(recipe => recipe.id).sort();
+const kitchenRecipeIndexNeedsRepair = (
+  JSON.stringify([...(schreiber.data.recipeIds || [])].sort()) !==
+  JSON.stringify(expectedKitchenRecipeIds)
 );
+const kitchenWrites = kitchenRecipeIndexNeedsRepair
+  ? [patchWrite(
+      'kitchens/schreiber',
+      { recipeIds: expectedKitchenRecipeIds },
+      schreiber
+    )]
+  : [];
 const visibilityWrites = familyRecipes
   .filter(recipe => recipe.data.visibility !== 'private')
   .map(recipe => patchWrite(
@@ -418,8 +427,9 @@ const summary = {
   originalTagsFingerprint: tagsFingerprint(familyRecipes),
   schreiberMemberCount: schreiberMemberIds.length,
   accessGrantWrites: accessWrites.length,
-  existingActiveAccessGrants,
-  missingActiveAccessGrants,
+  existingCanonicalAccessGrants,
+  missingOrNoncanonicalAccessGrants,
+  kitchenRecipeIndexNeedsRepair,
   demoCreates: demoWrites.length,
   visibilityUpdates: visibilityWrites.length,
   resultingPublicDemoCount: demoRecipes.length
@@ -434,7 +444,7 @@ if (!APPLY) {
 // readable throughout the migration.
 await commitWrites('Schreiber access grants', accessWrites);
 await commitWrites('Public demo recipes', demoWrites);
-await commitWrites('Schreiber recipe index', [kitchenWrite]);
+await commitWrites('Schreiber recipe index', kitchenWrites);
 await commitWrites('Private family visibility', visibilityWrites);
 
 const verifiedRecipes = await fetchCollection('recipes');
@@ -467,16 +477,16 @@ assert.deepEqual(
 
 for (const uid of schreiberMemberIds) {
   const grants = await fetchCollection(`users/${uid}/recipeAccess`);
-  const activeIds = new Set(
-    grants
-      .filter(grant => grant.data.active !== false)
-      .map(grant => grant.id)
-  );
+  const grantsById = new Map(grants.map(grant => [grant.id, grant.data]));
   for (const recipe of familyRecipes) {
+    const grant = grantsById.get(recipe.id);
+    assert.equal(grant?.recipeId, recipe.id);
+    assert.equal(grant?.active, true);
+    assert.equal(grant?.grantKind, 'kitchen');
     assert.equal(
-      activeIds.has(recipe.id),
-      true,
-      `User ${uid} is missing access to recipe ${recipe.id}`
+      grant?.kitchenId,
+      'schreiber',
+      `User ${uid} has noncanonical access to recipe ${recipe.id}`
     );
   }
 }
